@@ -1,0 +1,11 @@
+{
+    "title": "Mr.Scotty",
+    "frontend_addon_name": "mr-scotty",
+    "project_slug": "mr-scotty",
+    "description": "Mr.Scotty takes care of beaming up and down Plone content.",
+    "author": "Victor Fernandez de Alba",
+    "email": "sneridagh@gmail.com",
+    "github_organization": "collective",
+    "npm_package_name": "mr-scotty",
+    "__template__": "aurora_addon"
+}
