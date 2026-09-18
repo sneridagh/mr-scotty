@@ -89,6 +89,14 @@ For this reason, it only works with pnpm and Volto 18 (currently in alpha).
 -   [Make](https://6.docs.plone.org/install/create-project.html#make)
 -   [Docker](https://6.docs.plone.org/install/create-project.html#docker)
 
+Install and enable the latest Corepack. Corepack will resolve the pnpm version
+pinned by this repository's `packageManager` field.
+
+```shell
+npm install --global corepack@latest
+corepack enable
+```
+
 
 ### Make convenience commands
 
@@ -114,8 +122,9 @@ acceptance-frontend-dev-start    Start acceptance frontend in development mode
 acceptance-frontend-prod-start   Start acceptance frontend in production mode
 acceptance-backend-start         Start backend acceptance server
 ci-acceptance-backend-start      Start backend acceptance server in headless mode for CI
-acceptance-test                  Start Cypress in interactive mode
-ci-acceptance-test               Run cypress tests in headless mode for CI
+install-acceptance               Install the Playwright browsers used by the acceptance tests
+acceptance-test                  Start the acceptance tests in interactive (UI) mode
+ci-acceptance-test               Run the acceptance tests in headless mode for CI
 ```
 
 ### Development environment set up
@@ -188,7 +197,7 @@ In the second session, start the backend acceptance server.
 make acceptance-backend-start
 ```
 
-In the third session, start the Cypress interactive test runner.
+In the third session, start the acceptance test runner (Playwright UI).
 
 ```shell
 make acceptance-test
@@ -200,4 +209,4 @@ The project is licensed under the MIT license.
 
 ## Credits and Acknowledgements 🙏
 
-Crafted with care by **Generated using [Cookieplone (2.0.0b3)](https://github.com/plone/cookieplone) and [cookieplone-templates (e83d63f)](https://github.com/plone/cookieplone-templates/commit/e83d63f772cf4c5a49833115c313c4fbeb597ed9) on 2026-08-06 18:20:30.382294**. A special thanks to all contributors and supporters!
+Crafted with care by **Generated using [Cookieplone (2.0.0)](https://github.com/plone/cookieplone) and [cookieplone-templates (98096de)](https://github.com/plone/cookieplone-templates/commit/98096dea66c9131d77568d02e43e42eb7bf90eb8) on 2026-09-18 17:24:38.656235**. A special thanks to all contributors and supporters!
