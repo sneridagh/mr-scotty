@@ -9,7 +9,12 @@ Mr.Scotty takes care of beaming up and down Plone content.
 
 ## Features
 
-<!-- List your awesome features here -->
+- Server-side transfer between `plone.restapi` compliant servers.
+- Source-relative path and UUID preservation.
+- Preflight conflict detection and automatic structural parent creation.
+- Inline image/file fields and internal image-block dependencies are transferred with their content.
+
+See the [architecture and current transfer contract](docs/architecture.md).
 
 ## Installation
 
