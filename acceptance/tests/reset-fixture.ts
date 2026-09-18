@@ -5,10 +5,18 @@ function getRequestContext(requestOrPage: APIRequestContext | Page) {
   return requestOrPage;
 }
 
-function getDefaultApiURL() {
+export function getDefaultApiURL() {
   const hostname = process.env.BACKEND_HOST || '127.0.0.1';
   const siteId = process.env.SITE_ID || 'plone';
   return process.env.API_PATH || `http://${hostname}:55001/${siteId}`;
+}
+
+export function getDefaultSourceApiURL() {
+  const hostname =
+    process.env.SOURCE_BACKEND_HOST || process.env.BACKEND_HOST || '127.0.0.1';
+  const siteId = process.env.SOURCE_SITE_ID || process.env.SITE_ID || 'plone';
+  const port = process.env.SOURCE_BACKEND_PORT || '55002';
+  return process.env.SOURCE_API_PATH || `http://${hostname}:${port}/${siteId}`;
 }
 
 const ROBOT_HEADERS = { Accept: 'text/xml', 'content-type': 'text/xml' };
@@ -18,11 +26,9 @@ const ROBOT_HEADERS = { Accept: 'text/xml', 'content-type': 'text/xml' };
 // layer's baseline between tests via RobotRemote.
 const TESTING_LAYER = 'plone.app.robotframework.testing.VOLTO_ROBOT_TESTING';
 
-const SETUP_BODY =
-  `<?xml version="1.0"?><methodCall><methodName>run_keyword</methodName><params><param><value><string>remote_zodb_setup</string></value></param><param><value><array><data><value><string>${TESTING_LAYER}</string></value></data></array></value></param></params></methodCall>`;
+const SETUP_BODY = `<?xml version="1.0"?><methodCall><methodName>run_keyword</methodName><params><param><value><string>remote_zodb_setup</string></value></param><param><value><array><data><value><string>${TESTING_LAYER}</string></value></data></array></value></param></params></methodCall>`;
 
-const TEARDOWN_BODY =
-  `<?xml version="1.0"?><methodCall><methodName>run_keyword</methodName><params><param><value><string>remote_zodb_teardown</string></value></param><param><value><array><data><value><string>${TESTING_LAYER}</string></value></data></array></value></param></params></methodCall>`;
+const TEARDOWN_BODY = `<?xml version="1.0"?><methodCall><methodName>run_keyword</methodName><params><param><value><string>remote_zodb_teardown</string></value></param><param><value><array><data><value><string>${TESTING_LAYER}</string></value></data></array></value></param></params></methodCall>`;
 
 async function callRobotRemote(
   request: APIRequestContext,

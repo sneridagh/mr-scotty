@@ -227,6 +227,32 @@ describe('createTransferPlan', () => {
     });
   });
 
+  test('plans an existing final path for replacement when overwrite is enabled', async () => {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      if (
+        method === 'GET' &&
+        canonicalRequestPath(url) === '/Plone/archive/news/launch'
+      ) {
+        return json({ ...launch, '@id': url.toString() });
+      }
+      return successfulFetch()(resource, init);
+    });
+
+    const plan = await createTransferPlan(
+      { ...input, overwrite: true },
+      fetchImpl as typeof fetch,
+    );
+
+    expect(plan.overwrite).toBe(true);
+    expect(plan.operations.at(-1)).toMatchObject({
+      status: 'replace',
+      destinationUrl: 'https://new.example/Plone/archive/news/launch',
+    });
+  });
+
   test('fails preflight when a UUID already exists elsewhere', async () => {
     const fetchImpl = successfulFetch();
     fetchImpl.mockImplementation(async (resource, init) => {
@@ -275,6 +301,43 @@ describe('executeTransferPlan', () => {
     expect(report.destinationUrl).toBe(
       'https://new.example/Plone/archive/news/launch',
     );
+  });
+
+  test('deletes and recreates replaced content at the same path', async () => {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      if (
+        method === 'GET' &&
+        canonicalRequestPath(url) === '/Plone/archive/news/launch'
+      ) {
+        return json({ ...launch, '@id': url.toString() });
+      }
+      if (method === 'DELETE') return new Response(null, { status: 204 });
+      return successfulFetch()(resource, init);
+    });
+
+    const plan = await createTransferPlan(
+      { ...input, overwrite: true },
+      fetchImpl as typeof fetch,
+    );
+    fetchImpl.mockClear();
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+
+    const deletes = fetchImpl.mock.calls.filter(
+      ([, request]) => request?.method === 'DELETE',
+    );
+    expect(deletes.map(([resource]) => String(resource))).toEqual([
+      'https://new.example/Plone/archive/news/launch',
+    ]);
+    expect(report.replaced).toHaveLength(1);
+    expect(report.created).toHaveLength(1);
   });
 });
 

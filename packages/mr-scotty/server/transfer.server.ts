@@ -8,6 +8,8 @@ export interface TransferInput {
   destinationUrl: string;
   sourceAuth: EndpointAuth;
   destinationAuth: EndpointAuth;
+  /** Replace existing imported content instead of failing on path conflicts. */
+  overwrite?: boolean;
 }
 
 type ContentRecord = Record<string, unknown> & {
@@ -44,7 +46,7 @@ export interface TransferOperation {
   uid: string;
   type: string;
   kind: 'placeholder' | 'content';
-  status: 'create' | 'reuse';
+  status: 'create' | 'reuse' | 'replace';
   payload?: Record<string, unknown>;
 }
 
@@ -55,11 +57,18 @@ export interface TransferPlan {
   destinationRootUrl: string;
   sourceRelativePath: string;
   destinationPath: string;
+  overwrite: boolean;
   operations: TransferOperation[];
 }
 
 export interface TransferReport {
   created: Array<{
+    sourceUrl: string;
+    destinationUrl: string;
+    uid: string;
+    kind: TransferOperation['kind'];
+  }>;
+  replaced: Array<{
     sourceUrl: string;
     destinationUrl: string;
     uid: string;
@@ -693,6 +702,7 @@ export async function createTransferPlan(
   input: TransferInput,
   fetchImpl: Fetch = fetch,
 ): Promise<TransferPlan> {
+  const overwrite = input.overwrite === true;
   const sourceUrl = normalizeUrl(input.sourceUrl, 'Source URL');
   const destinationUrl = normalizeUrl(input.destinationUrl, 'Destination URL');
   const source = await readContentAndRoot(
@@ -857,7 +867,7 @@ export async function createTransferPlan(
       fetchImpl,
     );
 
-    if (existing && node.strictConflict) {
+    if (existing && node.strictConflict && !overwrite) {
       throw new TransferError(
         'path_conflict',
         `Content already exists at ${destinationItemUrl}.`,
@@ -881,7 +891,8 @@ export async function createTransferPlan(
       existing &&
       node.kind === 'content' &&
       existing.UID &&
-      existing.UID !== identity.uid
+      existing.UID !== identity.uid &&
+      !overwrite
     ) {
       throw new TransferError(
         'resource_path_conflict',
@@ -900,8 +911,14 @@ export async function createTransferPlan(
       );
     }
 
+    const status =
+      existing && overwrite && node.kind === 'content'
+        ? 'replace'
+        : existing
+          ? 'reuse'
+          : 'create';
     let payload: Record<string, unknown> | undefined;
-    if (!existing) {
+    if (status !== 'reuse') {
       payload =
         node.kind === 'placeholder'
           ? placeholderPayload(node.content, node.sourceUrl)
@@ -926,7 +943,7 @@ export async function createTransferPlan(
       destinationParentUrl: destinationParentUrl.toString(),
       ...identity,
       kind: node.kind,
-      status: existing ? 'reuse' : 'create',
+      status,
       payload,
     });
   }
@@ -938,6 +955,7 @@ export async function createTransferPlan(
     destinationRootUrl: destination.rootUrl.toString(),
     sourceRelativePath: `/${segments.join('/')}`,
     destinationPath: appendPath(destinationUrl, ...segments).pathname,
+    overwrite,
     operations,
   };
 }
@@ -952,6 +970,7 @@ export async function executeTransferPlan(
   );
   const report: TransferReport = {
     created: [],
+    replaced: [],
     reused: [],
     destinationUrl:
       selectedOperation?.destinationUrl ||
@@ -963,6 +982,17 @@ export async function executeTransferPlan(
     if (operation.status === 'reuse') {
       report.reused.push(operation.destinationUrl);
       continue;
+    }
+
+    if (operation.status === 'replace') {
+      await requestJson(
+        // plone.restapi exposes content deletion on the normal content URL;
+        // unlike GET/POST, DELETE is not served through the ++api++ traversal.
+        new URL(operation.destinationUrl),
+        destinationAuth,
+        fetchImpl,
+        { method: 'DELETE' },
+      );
     }
 
     await requestJson(
@@ -977,12 +1007,14 @@ export async function executeTransferPlan(
         body: JSON.stringify(operation.payload),
       },
     );
-    report.created.push({
+    const item = {
       sourceUrl: operation.sourceUrl,
       destinationUrl: operation.destinationUrl,
       uid: operation.uid,
       kind: operation.kind,
-    });
+    };
+    if (operation.status === 'replace') report.replaced.push(item);
+    else report.created.push(item);
   }
 
   return report;

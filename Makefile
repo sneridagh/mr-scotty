@@ -24,6 +24,7 @@ GIT_FOLDER=$(CURRENT_DIR)/.git
 PLONE_VERSION=6
 DOCKER_IMAGE=plone/server-dev:${PLONE_VERSION}
 DOCKER_IMAGE_ACCEPTANCE=plone/server-acceptance:${PLONE_VERSION}
+SOURCE_BACKEND_PORT?=55002
 
 ADDON_NAME='mr-scotty'
 
@@ -57,9 +58,6 @@ core/packages/components/dist: $(shell find core/packages/components/src -type f
 core/packages/client/dist: $(shell find core/packages/client/src -type f)
 	pnpm --filter @plone/client build
 
-core/packages/providers/dist: $(shell find core/packages/providers/src -type f)
-	pnpm --filter @plone/providers build
-
 core/packages/helpers/dist: $(shell find core/packages/helpers/src -type f)
 	pnpm --filter @plone/helpers build
 
@@ -67,7 +65,7 @@ core/packages/react-router/dist: $(shell find core/packages/react-router/src -ty
 	pnpm --filter @plone/react-router build
 
 .PHONY: build-deps
-build-deps: core/packages/registry/dist core/packages/components/dist core/packages/client/dist core/packages/providers/dist core/packages/react-router/dist core/packages/helpers/dist ## Build dependencies
+build-deps: core/packages/registry/dist core/packages/components/dist core/packages/client/dist core/packages/react-router/dist core/packages/helpers/dist ## Build dependencies
 
 .PHONY: i18n
 i18n: ## Sync i18n
@@ -137,9 +135,17 @@ acceptance-frontend-prod-start: ## Start acceptance frontend in production mode
 acceptance-backend-start: ## Start backend acceptance server
 	docker run -it --rm -p 55001:55001 $(DOCKER_IMAGE_ACCEPTANCE)
 
+.PHONY: acceptance-source-backend-start
+acceptance-source-backend-start: ## Start the source backend acceptance server
+	docker run -it --rm -e ZSERVER_HOST=0.0.0.0 -e ZSERVER_PORT=$(SOURCE_BACKEND_PORT) -p $(SOURCE_BACKEND_PORT):$(SOURCE_BACKEND_PORT) $(DOCKER_IMAGE_ACCEPTANCE)
+
 .PHONY: ci-acceptance-backend-start
 ci-acceptance-backend-start: ## Start backend acceptance server in headless mode for CI
 	docker run -i --rm -p 55001:55001 $(DOCKER_IMAGE_ACCEPTANCE)
+
+.PHONY: ci-acceptance-source-backend-start
+ci-acceptance-source-backend-start: ## Start the source backend acceptance server in headless mode for CI
+	docker run -i --rm -e ZSERVER_HOST=0.0.0.0 -e ZSERVER_PORT=$(SOURCE_BACKEND_PORT) -p $(SOURCE_BACKEND_PORT):$(SOURCE_BACKEND_PORT) $(DOCKER_IMAGE_ACCEPTANCE)
 
 ## Acceptance tests (Playwright)
 .PHONY: install-acceptance

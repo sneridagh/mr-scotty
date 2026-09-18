@@ -53,6 +53,7 @@ jobs:
         with:
           run: |
             make ci-acceptance-backend-start &
+            make ci-acceptance-source-backend-start &
             make acceptance-frontend-prod-start &
           # your step-level and job-level environment variables are available to your commands as-is
           # npm install will count towards the wait-for timeout
@@ -61,6 +62,7 @@ jobs:
 
           wait-on: |
             http-get://localhost:55001/plone
+            http-get://localhost:55002/plone
             http://localhost:3000
           # IMPORTANT: to use environment variables in wait-on, you must use this form: ${{ env.VAR }}
           # See wait-on section below for all resource types and prefixes

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import config from '@plone/registry';
 import { Button, Container, TextField } from '@plone/components/quanta';
 import { getAuthFromRequest, requireAuthCookie } from '@plone/react-router';
@@ -21,14 +21,20 @@ import {
 } from '../server/transfer.server';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
+type SubmittedForm = {
+  sourceUrl: string;
+  destinationUrl: string;
+  overwrite: boolean;
+};
 
 type ActionResult =
-  | { ok: true; intent: 'preflight'; plan: TransferPlan }
+  | { ok: true; intent: 'preflight'; plan: TransferPlan; form: SubmittedForm }
   | {
       ok: true;
       intent: 'transfer';
       plan: TransferPlan;
       report: TransferReport;
+      form: SubmittedForm;
     }
   | { ok: false; error: { code: string; message: string } };
 
@@ -118,21 +124,37 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     assertSessionDestination(formData);
     const destinationAuth = endpointAuth(formData, 'destination', sessionToken);
+    const sourceUrl = requiredString(formData, 'sourceUrl');
+    const destinationUrl = requiredString(formData, 'destinationUrl');
+    const overwrite = formData.has('overwrite');
     const input = {
-      sourceUrl: requiredString(formData, 'sourceUrl'),
-      destinationUrl: requiredString(formData, 'destinationUrl'),
+      sourceUrl,
+      destinationUrl,
       sourceAuth: endpointAuth(formData, 'source'),
       destinationAuth,
+      overwrite,
     };
+    const form = { sourceUrl, destinationUrl, overwrite };
     const intent = String(formData.get('intent') || 'preflight');
     const plan = await createTransferPlan(input);
 
     if (intent === 'transfer') {
       const report = await executeTransferPlan(plan, destinationAuth);
-      return data({ ok: true, intent, plan, report } satisfies ActionResult);
+      return data({
+        ok: true,
+        intent,
+        plan,
+        report,
+        form,
+      } satisfies ActionResult);
     }
 
-    return data({ ok: true, intent: 'preflight', plan } satisfies ActionResult);
+    return data({
+      ok: true,
+      intent: 'preflight',
+      plan,
+      form,
+    } satisfies ActionResult);
   } catch (error) {
     const transferError =
       error instanceof TransferError
@@ -224,6 +246,9 @@ function PlanResult({
   const reuses = result.plan.operations.filter(
     (operation) => operation.status === 'reuse',
   );
+  const replacements = result.plan.operations.filter(
+    (operation) => operation.status === 'replace',
+  );
 
   return (
     <section
@@ -241,8 +266,9 @@ function PlanResult({
         </h2>
         <p className="mt-2 text-sm text-quanta-pigeon">
           {creates.length} item{creates.length === 1 ? '' : 's'} to create;{' '}
-          {reuses.length} existing parent{reuses.length === 1 ? '' : 's'} to
-          reuse.
+          {replacements.length} item
+          {replacements.length === 1 ? '' : 's'} to replace; {reuses.length}{' '}
+          existing parent{reuses.length === 1 ? '' : 's'} to reuse.
         </p>
       </div>
       <ol className="space-y-2">
@@ -257,9 +283,11 @@ function PlanResult({
             <span className="rounded-full bg-quanta-air px-2 py-1 text-xs text-quanta-pigeon">
               {operation.status === 'reuse'
                 ? 'reuse'
-                : operation.kind === 'placeholder'
-                  ? 'create Document'
-                  : `create ${operation.type}`}
+                : operation.status === 'replace'
+                  ? `replace ${operation.type}`
+                  : operation.kind === 'placeholder'
+                    ? 'create Document'
+                    : `create ${operation.type}`}
             </span>
           </li>
         ))}
@@ -267,7 +295,9 @@ function PlanResult({
       {result.intent === 'transfer' && (
         <p className="text-sm font-medium text-quanta-space">
           Created {result.report.created.length} item
-          {result.report.created.length === 1 ? '' : 's'}. Final destination:{' '}
+          {result.report.created.length === 1 ? '' : 's'} and replaced{' '}
+          {result.report.replaced.length} item
+          {result.report.replaced.length === 1 ? '' : 's'}. Final destination:{' '}
           <a className="underline" href={result.report.destinationUrl}>
             {result.report.destinationUrl}
           </a>
@@ -282,6 +312,12 @@ export default function MrScotty() {
   const result = useActionData<typeof action>() as ActionResult | undefined;
   const navigation = useNavigation();
   const busy = navigation.state !== 'idle';
+  const [overwrite, setOverwrite] = useState(false);
+
+  useEffect(() => {
+    if (!result?.ok) return;
+    setOverwrite(result.form.overwrite);
+  }, [result]);
 
   return (
     <Container as="main" width="layout" className="w-full space-y-8 px-6 py-12">
@@ -301,6 +337,7 @@ export default function MrScotty() {
       <Form
         className="space-y-6 rounded-xl border border-quanta-smoke bg-quanta-air p-6"
         method="post"
+        noValidate
       >
         <TextField
           label="Source content URL"
@@ -308,6 +345,7 @@ export default function MrScotty() {
           name="sourceUrl"
           type="url"
           placeholder="https://old.example/Plone/news/item"
+          defaultValue={result?.ok ? result.form.sourceUrl : undefined}
           isRequired
         />
         <AuthenticationFields prefix="source" defaultMode="anonymous" />
@@ -320,6 +358,24 @@ export default function MrScotty() {
           isRequired
         />
         <AuthenticationFields prefix="destination" defaultMode="session" />
+        <div className="space-y-2 rounded-lg border border-quanta-candy bg-quanta-ballet p-4">
+          <label className="flex items-center gap-2 font-medium text-quanta-space">
+            <input
+              type="checkbox"
+              name="overwrite"
+              value="true"
+              checked={overwrite}
+              onChange={(event) => setOverwrite(event.target.checked)}
+              disabled={busy}
+              className="h-4 w-4 rounded border-quanta-pigeon accent-quanta-sapphire"
+            />
+            Overwrite imported path
+          </label>
+          <p className="text-xs text-quanta-pigeon">
+            Replace existing content at the source-relative destination path.
+            Unrelated siblings and destination parents are preserved.
+          </p>
+        </div>
         <div className="flex flex-wrap gap-3">
           <Button
             type="submit"

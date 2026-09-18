@@ -120,7 +120,8 @@ export async function createContent(
 
   if (transition) {
     const normalizedId = normalizePath(contentId);
-    const url = `${apiURL}/${normalizedPath}/${normalizedId}/@workflow/${transition}`;
+    const itemPath = [normalizedPath, normalizedId].filter(Boolean).join('/');
+    const url = `${apiURL}/${itemPath}/@workflow/${transition}`;
 
     const transitionResponse = await request.post(url, {
       headers: {
@@ -130,8 +131,9 @@ export async function createContent(
     });
 
     if (!transitionResponse.ok()) {
+      const detail = await transitionResponse.text().catch(() => '');
       throw new Error(
-        `Workflow transition failed: POST ${url} returned ${transitionResponse.status()} ${transitionResponse.statusText()}`,
+        `Workflow transition failed: POST ${url} returned ${transitionResponse.status()} ${transitionResponse.statusText()}${detail ? `: ${detail}` : ''}`,
       );
     }
   }
