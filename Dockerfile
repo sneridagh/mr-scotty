@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-ARG VOLTO_VERSION
-FROM plone/frontend-builder:${VOLTO_VERSION} AS builder
+ARG AURORA_VERSION=1.0.0-alpha.9
+FROM plone/aurora-builder:${AURORA_VERSION} AS builder
 
 COPY --chown=node packages/mr-scotty /app/packages/mr-scotty
 COPY --chown=node registry.config.ts /app/
@@ -21,7 +21,7 @@ RUN --mount=type=cache,id=pnpm,target=/app/.pnpm-store,uid=1000 <<EOT
     CI=1 pnpm install --prod
 EOT
 
-FROM plone/frontend-prod-config:${VOLTO_VERSION}
+FROM plone/aurora-prod-config:${AURORA_VERSION}
 
 LABEL maintainer="Victor Fernandez de Alba <sneridagh@gmail.com>" \
       org.label-schema.name="mr-scotty-frontend" \
@@ -32,7 +32,11 @@ COPY --from=builder /app/ /app/
 
 RUN <<EOT
     set -e
+    # CI=true keeps corepack/pnpm non-interactive: if it decides to reconcile the
+    # copied node_modules it must not block on a modules-purge confirmation
+    # prompt (there is no TTY during the image build).
+    export CI=true
     corepack enable pnpm
-    corepack use pnpm@10.20.0
-    corepack prepare pnpm@10.20.0 --activate
+    corepack use pnpm@11.20.0
+    corepack prepare pnpm@11.20.0 --activate
 EOT
