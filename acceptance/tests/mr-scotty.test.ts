@@ -27,7 +27,13 @@ function bearerAuth(token: string) {
 
 async function typeSourceUrl(page: Page, sourceUrl: string) {
   const sourceInput = page.locator('input[name="sourceUrl"]');
-  await sourceInput.fill(sourceUrl);
+  // The source field has no defaultValue, so React Aria seeds its controlled
+  // state to empty. A value filled before the client finishes hydrating is
+  // discarded when React takes over, so refill until it sticks.
+  await expect(async () => {
+    await sourceInput.fill(sourceUrl);
+    await expect(sourceInput).toHaveValue(sourceUrl, { timeout: 500 });
+  }).toPass({ timeout: 10_000 });
 }
 
 async function waitForMrScottyHydration(page: Page) {
@@ -278,16 +284,18 @@ test.describe('Mr. Scotty', () => {
 
     await page.goto('/mr-scotty');
     await waitForMrScottyHydration(page);
-    await page
-      .getByRole('checkbox', { name: 'Overwrite imported path' })
-      .check({ force: true });
+    // The native radio input is visually hidden behind its styled control, so
+    // target the option's label text instead.
+    await page.getByText('Replace existing content').click();
     await typeSourceUrl(page, `${sourceApiURL}/${sourceId}`);
 
     await page.getByRole('button', { name: 'Inspect transfer' }).click();
     await expect(page.getByText('Preflight ready')).toBeVisible();
-    await expect(page.getByText('replace Document')).toBeVisible();
+    await expect(page.getByText('Replace Document')).toBeVisible();
 
+    // A destructive replace is confirmed in a dialog before it runs.
     await page.getByRole('button', { name: 'Beam content' }).click();
+    await page.getByRole('button', { name: 'Delete & beam' }).click();
     await expect(page.getByText('Transfer complete')).toBeVisible();
 
     const destinationHeaders = bearerAuth(destinationToken);

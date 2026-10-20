@@ -27,9 +27,11 @@
     "release-alpha": "release-it --preRelease=alpha"
   },
   "dependencies": {
-    "@plone/components": "workspace:*",
+    "@plone/icons": "workspace:*",
+    "@plone/quanta": "workspace:*",
     "@plone/react-router": "workspace:*",
     "@plone/registry": "workspace:*",
+    "react-aria-components": "catalog:",
     "react-router": "catalog:"
   },
   "peerDependencies": {

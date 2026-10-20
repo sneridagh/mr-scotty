@@ -1,6 +1,19 @@
 import { useEffect, useState } from 'react';
 import config from '@plone/registry';
-import { Button, Container, TextField } from '@plone/components/quanta';
+import {
+  Button,
+  Container,
+  Dialog,
+  Modal,
+  Radio,
+  RadioGroup,
+  Select,
+  SelectItem,
+  Separator,
+  TextField,
+} from '@plone/quanta';
+import { Tabs as RACTabs } from 'react-aria-components';
+import { Tab, TabList, TabPanel } from '@plone/quanta';
 import { getAuthFromRequest, requireAuthCookie } from '@plone/react-router';
 import {
   Form,
@@ -11,6 +24,8 @@ import {
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from 'react-router';
+
+const FORM_ID = 'mr-scotty-transfer';
 import {
   createTransferPlan,
   executeTransferPlan,
@@ -21,6 +36,7 @@ import {
 } from '../server/transfer.server';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
+type ConflictPolicy = 'fail' | 'replace';
 type SubmittedForm = {
   sourceUrl: string;
   destinationUrl: string;
@@ -185,26 +201,26 @@ function AuthenticationFields({
   const label = prefix === 'source' ? 'Source' : 'Destination';
 
   return (
-    <fieldset className="space-y-3 rounded-lg border border-quanta-smoke p-4">
-      <legend className="px-1 text-sm font-semibold text-quanta-space">
-        {label} authentication
-      </legend>
-      <label className="flex flex-col gap-1 text-xs font-medium text-quanta-pigeon">
-        Method
-        <select
-          className="h-11 rounded-lg bg-quanta-snow px-3 text-sm text-quanta-space"
-          name={`${prefix}AuthMode`}
-          value={mode}
-          onChange={(event) => setMode(event.target.value as AuthMode)}
-        >
-          {prefix === 'destination' && (
-            <option value="session">Aurora session</option>
-          )}
-          <option value="anonymous">Anonymous</option>
-          <option value="bearer">Bearer token</option>
-          <option value="basic">Username and password</option>
-        </select>
-      </label>
+    <div className="flex flex-col gap-3">
+      <Select
+        label="Connection"
+        name={`${prefix}AuthMode`}
+        selectedKey={mode}
+        onSelectionChange={(key) => setMode(key as AuthMode)}
+        description={
+          prefix === 'destination'
+            ? 'Your Aurora session is reused only for this site’s configured backend.'
+            : 'How Mr. Scotty authenticates when reading from the source server.'
+        }
+      >
+        {prefix === 'destination' ? (
+          <SelectItem id="session">This site (Aurora session)</SelectItem>
+        ) : null}
+        <SelectItem id="anonymous">Anonymous</SelectItem>
+        <SelectItem id="bearer">Bearer token</SelectItem>
+        <SelectItem id="basic">Username and password</SelectItem>
+      </Select>
+
       {mode === 'bearer' && (
         <TextField
           label={`${label} bearer token`}
@@ -231,74 +247,131 @@ function AuthenticationFields({
           />
         </div>
       )}
-    </fieldset>
+    </div>
   );
 }
 
-function PlanResult({
+function SectionCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-quanta-smoke bg-quanta-air p-6">
+      <header className="mb-4">
+        <h2 className="text-base font-semibold text-quanta-space">{title}</h2>
+        <p className="mt-0.5 text-sm text-quanta-pigeon">{description}</p>
+      </header>
+      {children}
+    </section>
+  );
+}
+
+const STATUS_BADGE: Record<string, string> = {
+  create: 'bg-green-100 text-green-700',
+  reuse: 'bg-quanta-snow text-quanta-pigeon',
+  replace: 'bg-quanta-ballet text-quanta-candy',
+};
+
+function operationLabel(operation: TransferPlan['operations'][number]): string {
+  if (operation.status === 'reuse') return 'Reuse';
+  if (operation.status === 'replace') return `Replace ${operation.type}`;
+  return operation.kind === 'placeholder'
+    ? 'Create Document'
+    : `Create ${operation.type}`;
+}
+
+function CountChip({ label, className }: { label: string; className: string }) {
+  return (
+    <span
+      className={`rounded-full px-2.5 py-1 text-xs font-medium ${className}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function PlanReview({
   result,
 }: {
   result: Extract<ActionResult, { ok: true }>;
 }) {
-  const creates = result.plan.operations.filter(
-    (operation) => operation.status === 'create',
-  );
-  const reuses = result.plan.operations.filter(
-    (operation) => operation.status === 'reuse',
-  );
+  const creates = result.plan.operations.filter((o) => o.status === 'create');
+  const reuses = result.plan.operations.filter((o) => o.status === 'reuse');
   const replacements = result.plan.operations.filter(
-    (operation) => operation.status === 'replace',
+    (o) => o.status === 'replace',
   );
 
   return (
     <section
-      className="space-y-4 rounded-xl border border-quanta-smoke bg-quanta-air p-6"
+      className="rounded-xl border border-quanta-smoke bg-quanta-air p-6"
       aria-live="polite"
     >
-      <div>
-        <p className="text-xs font-medium tracking-wide text-quanta-pigeon uppercase">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h2 className="text-base font-semibold text-quanta-space">
           {result.intent === 'transfer'
             ? 'Transfer complete'
             : 'Preflight ready'}
-        </p>
-        <h2 className="mt-1 text-xl font-semibold text-quanta-space">
-          {result.plan.destinationPath}
         </h2>
-        <p className="mt-2 text-sm text-quanta-pigeon">
-          {creates.length} item{creates.length === 1 ? '' : 's'} to create;{' '}
-          {replacements.length} item
-          {replacements.length === 1 ? '' : 's'} to replace; {reuses.length}{' '}
-          existing parent{reuses.length === 1 ? '' : 's'} to reuse.
-        </p>
+        <div className="flex flex-wrap gap-2">
+          <CountChip
+            label={`${creates.length} create`}
+            className="bg-green-100 text-green-700"
+          />
+          <CountChip
+            label={`${replacements.length} replace`}
+            className="bg-quanta-ballet text-quanta-candy"
+          />
+          <CountChip
+            label={`${reuses.length} reuse`}
+            className="bg-quanta-snow text-quanta-pigeon"
+          />
+        </div>
       </div>
-      <ol className="space-y-2">
+      <p className="mt-1 font-mono text-sm break-all text-quanta-pigeon">
+        {result.plan.destinationPath}
+      </p>
+
+      <Separator className="my-4 bg-quanta-smoke" />
+
+      <ol className="flex flex-col gap-2">
         {result.plan.operations.map((operation) => (
           <li
-            className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-quanta-snow px-4 py-3 text-sm"
             key={operation.destinationUrl}
+            className={`flex flex-wrap items-center justify-between gap-3 rounded-lg px-4 py-3 text-sm ${
+              operation.status === 'replace'
+                ? 'bg-quanta-ballet'
+                : 'bg-quanta-snow'
+            }`}
           >
             <span className="min-w-0 break-all text-quanta-space">
               {operation.destinationUrl}
             </span>
-            <span className="rounded-full bg-quanta-air px-2 py-1 text-xs text-quanta-pigeon">
-              {operation.status === 'reuse'
-                ? 'reuse'
-                : operation.status === 'replace'
-                  ? `replace ${operation.type}`
-                  : operation.kind === 'placeholder'
-                    ? 'create Document'
-                    : `create ${operation.type}`}
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                STATUS_BADGE[operation.status]
+              }`}
+            >
+              {operationLabel(operation)}
             </span>
           </li>
         ))}
       </ol>
+
       {result.intent === 'transfer' && (
-        <p className="text-sm font-medium text-quanta-space">
+        <p className="mt-4 text-sm font-medium text-quanta-space">
           Created {result.report.created.length} item
           {result.report.created.length === 1 ? '' : 's'} and replaced{' '}
           {result.report.replaced.length} item
           {result.report.replaced.length === 1 ? '' : 's'}. Final destination:{' '}
-          <a className="underline" href={result.report.destinationUrl}>
+          <a
+            className="text-quanta-sapphire underline"
+            href={result.report.destinationUrl}
+          >
             {result.report.destinationUrl}
           </a>
         </p>
@@ -307,110 +380,281 @@ function PlanResult({
   );
 }
 
+function ActivityPanel({ result }: { result: ActionResult | undefined }) {
+  if (!result) {
+    return (
+      <p className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-6 text-sm text-quanta-pigeon">
+        No transfers yet. Runs you start appear here with their report. Live
+        progress and history arrive with persistent jobs.
+      </p>
+    );
+  }
+
+  if (result.ok === false) {
+    return (
+      <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
+        <p className="text-sm font-semibold text-quanta-candy">
+          Transfer failed
+        </p>
+        <p className="mt-1 text-sm text-quanta-space">{result.error.message}</p>
+        <p className="mt-2 text-xs text-quanta-pigeon">
+          Error code: {result.error.code}
+        </p>
+      </div>
+    );
+  }
+
+  if (result.intent !== 'transfer') {
+    return (
+      <p className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-6 text-sm text-quanta-pigeon">
+        Preflight ran, but nothing has been beamed yet. Completed transfers show
+        up here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
+      <div className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+        <p className="text-sm font-semibold text-quanta-space">
+          Beamed {result.form.sourceUrl}
+        </p>
+      </div>
+      <p className="mt-1 text-sm text-quanta-pigeon">
+        Created {result.report.created.length}, replaced{' '}
+        {result.report.replaced.length}, reused {result.report.reused.length}.{' '}
+        <a
+          className="text-quanta-sapphire underline"
+          href={result.report.destinationUrl}
+        >
+          Open destination
+        </a>
+      </p>
+    </div>
+  );
+}
+
 export default function MrScotty() {
   const { destinationUrl } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>() as ActionResult | undefined;
   const navigation = useNavigation();
   const busy = navigation.state !== 'idle';
-  const [overwrite, setOverwrite] = useState(false);
+
+  const [tab, setTab] = useState<'new' | 'activity'>('new');
+  const [policy, setPolicy] = useState<ConflictPolicy>('fail');
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!result?.ok) return;
-    setOverwrite(result.form.overwrite);
+    setPolicy(result.form.overwrite ? 'replace' : 'fail');
+    if (result.intent === 'transfer') setTab('activity');
   }, [result]);
 
   return (
-    <Container as="main" width="layout" className="w-full space-y-8 px-6 py-12">
-      <header className="space-y-3">
-        <p className="text-sm font-medium tracking-widest text-quanta-pigeon uppercase">
-          Mr. Scotty
+    <Container as="main" width="layout" className="w-full px-6 py-12">
+      <header className="mb-6 flex flex-col gap-2">
+        <p className="text-xs font-medium tracking-widest text-quanta-pigeon uppercase">
+          Site Setup · Content
         </p>
-        <h1 className="text-4xl font-semibold tracking-tight text-quanta-space">
-          Beam Plone content
+        <h1 className="text-3xl font-semibold tracking-tight text-quanta-space">
+          Mr. Scotty
         </h1>
-        <p className="max-w-2xl text-base text-quanta-pigeon">
-          Inspect a source object, preserve its site-relative path and UUID, and
-          create it below the destination path from the Aurora server.
+        <p className="max-w-2xl text-sm text-quanta-pigeon">
+          Beam content between any <code>plone.restapi</code> servers. Paths and
+          UUIDs are preserved, structure is recreated, and internal image
+          dependencies travel with their content.
         </p>
       </header>
 
-      <Form
-        className="space-y-6 rounded-xl border border-quanta-smoke bg-quanta-air p-6"
-        method="post"
-        noValidate
+      <RACTabs
+        selectedKey={tab}
+        onSelectionChange={(key) => setTab(key as 'new' | 'activity')}
       >
-        <TextField
-          label="Source content URL"
-          description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
-          name="sourceUrl"
-          type="url"
-          placeholder="https://old.example/Plone/news/item"
-          defaultValue={result?.ok ? result.form.sourceUrl : undefined}
-          isRequired
-        />
-        <AuthenticationFields prefix="source" defaultMode="anonymous" />
-        <TextField
-          label="Destination container URL"
-          description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
-          name="destinationUrl"
-          type="url"
-          defaultValue={destinationUrl}
-          isRequired
-        />
-        <AuthenticationFields prefix="destination" defaultMode="session" />
-        <div className="space-y-2 rounded-lg border border-quanta-candy bg-quanta-ballet p-4">
-          <label className="flex items-center gap-2 font-medium text-quanta-space">
-            <input
-              type="checkbox"
-              name="overwrite"
-              value="true"
-              checked={overwrite}
-              onChange={(event) => setOverwrite(event.target.checked)}
-              disabled={busy}
-              className="h-4 w-4 rounded border-quanta-pigeon accent-quanta-sapphire"
-            />
-            Overwrite imported path
-          </label>
-          <p className="text-xs text-quanta-pigeon">
-            Replace existing content at the source-relative destination path.
-            Unrelated siblings and destination parents are preserved.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <Button
-            type="submit"
-            name="intent"
-            value="preflight"
-            isDisabled={busy}
-          >
-            {busy ? 'Inspecting…' : 'Inspect transfer'}
-          </Button>
-          <Button
-            type="submit"
-            name="intent"
-            value="transfer"
-            variant="primary"
-            accent
-            isDisabled={busy}
-          >
-            {busy ? 'Working…' : 'Beam content'}
-          </Button>
-        </div>
-      </Form>
-
-      {result?.ok === false && (
-        <section
-          className="rounded-xl border border-quanta-candy bg-quanta-ballet p-5 text-sm text-quanta-space"
-          role="alert"
+        <TabList
+          aria-label="Mr. Scotty"
+          className="mb-6 border-b border-quanta-smoke"
         >
-          <p className="font-semibold">Transfer could not start</p>
-          <p className="mt-1">{result.error.message}</p>
-          <p className="mt-2 text-xs text-quanta-pigeon">
-            Error code: {result.error.code}
+          <Tab id="new">New transfer</Tab>
+          <Tab id="activity">Activity</Tab>
+        </TabList>
+
+        <TabPanel id="new" shouldForceMount className="flex flex-col gap-6">
+          <Form id={FORM_ID} method="post" noValidate>
+            {policy === 'replace' && (
+              <input type="hidden" name="overwrite" value="true" />
+            )}
+            <div className="flex flex-col gap-6">
+              <SectionCard
+                title="Source"
+                description="The content object to read from."
+              >
+                <div className="flex flex-col gap-4">
+                  <TextField
+                    label="Source content URL"
+                    description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
+                    name="sourceUrl"
+                    type="url"
+                    placeholder="https://old.example/Plone/news/item"
+                    defaultValue={
+                      result?.ok ? result.form.sourceUrl : undefined
+                    }
+                    isRequired
+                  />
+                  <AuthenticationFields
+                    prefix="source"
+                    defaultMode="anonymous"
+                  />
+                </div>
+              </SectionCard>
+
+              <SectionCard
+                title="Destination"
+                description="The container content is beamed into."
+              >
+                <div className="flex flex-col gap-4">
+                  <TextField
+                    label="Destination container URL"
+                    description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
+                    name="destinationUrl"
+                    type="url"
+                    defaultValue={destinationUrl}
+                    isRequired
+                  />
+                  <AuthenticationFields
+                    prefix="destination"
+                    defaultMode="session"
+                  />
+                </div>
+              </SectionCard>
+
+              <SectionCard
+                title="Options"
+                description="How Mr. Scotty resolves a path that already exists."
+              >
+                <RadioGroup
+                  aria-label="Conflict policy"
+                  value={policy}
+                  onChange={(value) => setPolicy(value as ConflictPolicy)}
+                  isDisabled={busy}
+                >
+                  <Radio value="fail">
+                    <span className="flex flex-col">
+                      <span className="font-medium text-quanta-space">
+                        Fail
+                      </span>
+                      <span className="text-xs text-quanta-pigeon">
+                        Abort before any write when the path or a UUID collides.
+                        The safe default.
+                      </span>
+                    </span>
+                  </Radio>
+                  <Radio value="replace">
+                    <span className="flex flex-col">
+                      <span className="font-medium text-quanta-space">
+                        Replace existing content
+                      </span>
+                      <span className="text-xs text-quanta-pigeon">
+                        Delete the item at the source-relative path, then
+                        recreate it. Unrelated siblings and parents are
+                        preserved. Confirmed before it runs.
+                      </span>
+                    </span>
+                  </Radio>
+                </RadioGroup>
+              </SectionCard>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit"
+                  name="intent"
+                  value="preflight"
+                  variant="neutral"
+                  isDisabled={busy}
+                >
+                  {busy ? 'Inspecting…' : 'Inspect transfer'}
+                </Button>
+                {policy === 'replace' ? (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    accent
+                    isDisabled={busy}
+                    onPress={() => setConfirmOpen(true)}
+                  >
+                    {busy ? 'Working…' : 'Beam content'}
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    name="intent"
+                    value="transfer"
+                    variant="primary"
+                    accent
+                    isDisabled={busy}
+                  >
+                    {busy ? 'Working…' : 'Beam content'}
+                  </Button>
+                )}
+                <span className="text-sm text-quanta-pigeon">
+                  Inspect is a dry run — nothing is written.
+                </span>
+              </div>
+            </div>
+          </Form>
+
+          {result?.ok === false && (
+            <section
+              className="rounded-xl border border-quanta-candy bg-quanta-ballet p-5 text-sm text-quanta-space"
+              role="alert"
+            >
+              <p className="font-semibold">Transfer could not start</p>
+              <p className="mt-1">{result.error.message}</p>
+              <p className="mt-2 text-xs text-quanta-pigeon">
+                Error code: {result.error.code}
+              </p>
+            </section>
+          )}
+          {result?.ok === true && <PlanReview result={result} />}
+        </TabPanel>
+
+        <TabPanel id="activity" shouldForceMount>
+          <ActivityPanel result={result} />
+        </TabPanel>
+      </RACTabs>
+
+      <Modal isOpen={confirmOpen} onOpenChange={setConfirmOpen} isDismissable>
+        <Dialog className="max-w-md p-6 outline-none">
+          <h2 className="text-lg font-semibold text-quanta-space">
+            Confirm replace
+          </h2>
+          <p className="mt-2 text-sm text-quanta-pigeon">
+            This transfer deletes the existing content at the source-relative
+            path and recreates it. Structural parents and unrelated siblings are
+            left untouched.
           </p>
-        </section>
-      )}
-      {result?.ok === true && <PlanResult result={result} />}
+          <div className="mt-5 flex justify-end gap-3">
+            <Button
+              type="button"
+              variant="neutral"
+              onPress={() => setConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form={FORM_ID}
+              name="intent"
+              value="transfer"
+              variant="destructive"
+              accent
+              onPress={() => setConfirmOpen(false)}
+            >
+              Delete &amp; beam
+            </Button>
+          </div>
+        </Dialog>
+      </Modal>
     </Container>
   );
 }
