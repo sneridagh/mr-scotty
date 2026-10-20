@@ -16,7 +16,7 @@ import {
   TextField,
 } from '@plone/quanta';
 import { Tabs as RACTabs } from 'react-aria-components';
-import { getAuthFromRequest, requireAuthCookie } from '@plone/react-router';
+import { requireAuthCookie } from '@plone/react-router';
 import {
   Form,
   data,
@@ -56,8 +56,33 @@ type ActionResult =
     }
   | { ok: false; error: { code: string; message: string } };
 
+/**
+ * Mr. Scotty can read from and write to arbitrary servers, so it is gated on
+ * the Manager role rather than mere authentication. The Manager-only
+ * `@controlpanels` endpoint is used as the role probe against this site's
+ * configured backend.
+ */
+async function requireManager(request: Request): Promise<string> {
+  const token = await requireAuthCookie(request);
+  const apiPath = String(config.settings.apiPath).replace(/\/+$/, '');
+  const response = await fetch(`${apiPath}/@controlpanels`, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    redirect: 'manual',
+  });
+  if (!response.ok) {
+    throw new Response('Mr. Scotty requires the Manager role.', {
+      status: 403,
+      statusText: 'Forbidden',
+    });
+  }
+  return token;
+}
+
 export async function loader({ request }: LoaderFunctionArgs) {
-  await requireAuthCookie(request);
+  await requireManager(request);
   return { destinationUrl: config.settings.apiPath };
 }
 
@@ -135,8 +160,7 @@ function assertSessionDestination(formData: FormData) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  await requireAuthCookie(request);
-  const sessionToken = await getAuthFromRequest(request);
+  const sessionToken = await requireManager(request);
   const formData = await request.formData();
 
   try {
@@ -316,7 +340,9 @@ function PlanReview({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <h2 className="text-base font-semibold text-quanta-space">
           {result.intent === 'transfer'
-            ? 'Transfer complete'
+            ? result.report.failed
+              ? 'Transfer incomplete'
+              : 'Transfer complete'
             : 'Preflight ready'}
         </h2>
         <div className="flex flex-wrap gap-2">
@@ -364,20 +390,45 @@ function PlanReview({
         ))}
       </ol>
 
-      {result.intent === 'transfer' && (
-        <p className="mt-4 text-sm font-medium text-quanta-space">
-          Created {result.report.created.length} item
-          {result.report.created.length === 1 ? '' : 's'} and replaced{' '}
-          {result.report.replaced.length} item
-          {result.report.replaced.length === 1 ? '' : 's'}. Final destination:{' '}
-          <a
-            className="text-quanta-sapphire underline"
-            href={result.report.destinationUrl}
-          >
-            {result.report.destinationUrl}
-          </a>
-        </p>
-      )}
+      {result.intent === 'transfer' &&
+        (result.report.failed ? (
+          <div className="mt-4 rounded-lg bg-quanta-ballet p-4 text-sm text-quanta-space">
+            <p className="font-semibold text-quanta-candy">
+              Stopped before finishing
+            </p>
+            <p className="mt-1">
+              Created {result.report.created.length}, replaced{' '}
+              {result.report.replaced.length} before{' '}
+              <span className="font-mono break-all">
+                {result.report.failed.destinationUrl}
+              </span>{' '}
+              failed: {result.report.failed.message}
+            </p>
+            {result.report.failed.restored !== undefined && (
+              <p className="mt-1 text-xs text-quanta-pigeon">
+                {result.report.failed.restored
+                  ? 'The original content at that path was restored.'
+                  : 'The original content at that path could not be restored.'}
+              </p>
+            )}
+            <p className="mt-1 text-xs text-quanta-pigeon">
+              Error code: {result.report.failed.code}
+            </p>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm font-medium text-quanta-space">
+            Created {result.report.created.length} item
+            {result.report.created.length === 1 ? '' : 's'} and replaced{' '}
+            {result.report.replaced.length} item
+            {result.report.replaced.length === 1 ? '' : 's'}. Final destination:{' '}
+            <a
+              className="text-quanta-sapphire underline"
+              href={result.report.destinationUrl}
+            >
+              {result.report.destinationUrl}
+            </a>
+          </p>
+        ))}
     </section>
   );
 }
@@ -415,12 +466,17 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
     );
   }
 
+  const failed = result.report.failed;
   return (
     <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
       <div className="flex items-center gap-2">
-        <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+        <span
+          className={`h-2.5 w-2.5 rounded-full ${
+            failed ? 'bg-quanta-candy' : 'bg-green-500'
+          }`}
+        />
         <p className="text-sm font-semibold text-quanta-space">
-          Beamed {result.form.sourceUrl}
+          {failed ? 'Partially beamed' : 'Beamed'} {result.form.sourceUrl}
         </p>
       </div>
       <p className="mt-1 text-sm text-quanta-pigeon">
@@ -433,6 +489,11 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
           Open destination
         </a>
       </p>
+      {failed && (
+        <p className="mt-2 text-xs text-quanta-candy">
+          Stopped at {failed.destinationUrl}: {failed.message}
+        </p>
+      )}
     </div>
   );
 }
