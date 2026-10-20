@@ -1971,6 +1971,9 @@ importers:
       react-router:
         specifier: 'catalog:'
         version: 8.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.3.3
     devDependencies:
       '@axe-core/playwright':
         specifier: ^4.12.1
