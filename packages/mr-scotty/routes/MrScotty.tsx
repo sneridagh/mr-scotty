@@ -10,10 +10,12 @@ import {
   Select,
   SelectItem,
   Separator,
+  Tab,
+  TabList,
+  TabPanel,
   TextField,
 } from '@plone/quanta';
 import { Tabs as RACTabs } from 'react-aria-components';
-import { Tab, TabList, TabPanel } from '@plone/quanta';
 import { getAuthFromRequest, requireAuthCookie } from '@plone/react-router';
 import {
   Form,
