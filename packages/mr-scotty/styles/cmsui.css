@@ -1,0 +1,8 @@
+/*
+  Mr. Scotty CMS UI styles.
+
+  The presence of this file makes @plone/registry add an `@source` for this
+  add-on to the generated CMS UI Tailwind entry, so the Tailwind utility
+  classes used in the add-on's routes are scanned and generated. Add-on-specific
+  CSS can also live here.
+*/
