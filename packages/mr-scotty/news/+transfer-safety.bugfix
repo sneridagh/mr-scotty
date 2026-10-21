@@ -1,0 +1,1 @@
+A `replace` now captures the existing content and restores it best-effort when the recreate fails, and a failed operation returns a partial report of what was written instead of discarding the progress. @sneridagh

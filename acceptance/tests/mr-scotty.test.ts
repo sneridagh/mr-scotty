@@ -28,12 +28,14 @@ function bearerAuth(token: string) {
 async function typeSourceUrl(page: Page, sourceUrl: string) {
   const sourceInput = page.locator('input[name="sourceUrl"]');
   // The source field has no defaultValue, so React Aria seeds its controlled
-  // state to empty. A value filled before the client finishes hydrating is
-  // discarded when React takes over, so refill until it sticks.
+  // state to empty and wipes the input once, when the client hydrates. A value
+  // filled before that one-time render is discarded, so fill, let the wipe
+  // happen, and refill until the value survives it.
   await expect(async () => {
     await sourceInput.fill(sourceUrl);
-    await expect(sourceInput).toHaveValue(sourceUrl, { timeout: 500 });
-  }).toPass({ timeout: 10_000 });
+    await page.waitForTimeout(300);
+    await expect(sourceInput).toHaveValue(sourceUrl);
+  }).toPass({ timeout: 20_000 });
 }
 
 async function waitForMrScottyHydration(page: Page) {

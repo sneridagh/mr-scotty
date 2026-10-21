@@ -1,8 +1,11 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  assertHostAllowed,
   createContentPayload,
   createTransferPlan,
   executeTransferPlan,
+  readSsrfPolicyFromEnv,
+  TransferError,
   type TransferInput,
 } from './transfer.server';
 
@@ -338,6 +341,197 @@ describe('executeTransferPlan', () => {
     ]);
     expect(report.replaced).toHaveLength(1);
     expect(report.created).toHaveLength(1);
+  });
+
+  test('returns a partial report instead of throwing when an operation fails', async () => {
+    const fetchImpl = successfulFetch();
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+
+    const execFetch = vi.fn(
+      async (resource: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(resource));
+        const method = init?.method || 'GET';
+        // Creating `launch` (POST into its parent `archive/news`) fails.
+        if (
+          method === 'POST' &&
+          canonicalRequestPath(url).endsWith('/archive/news')
+        ) {
+          return json({ error: { message: 'boom' } }, 500);
+        }
+        return successfulFetch()(resource, init);
+      },
+    );
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      execFetch as typeof fetch,
+    );
+
+    // The structural parent was created before the failure; nothing after it.
+    expect(report.created).toHaveLength(1);
+    expect(report.created[0].destinationUrl).toBe(
+      'https://new.example/Plone/archive/news',
+    );
+    expect(report.failed).toMatchObject({
+      destinationUrl: 'https://new.example/Plone/archive/news/launch',
+      code: 'restapi_500',
+    });
+  });
+
+  test('restores the original content when a replace recreate fails', async () => {
+    const existingLaunch = {
+      ...launch,
+      '@id': 'https://new.example/Plone/archive/news/launch',
+      title: 'Old destination launch',
+    };
+    const planFetch = successfulFetch();
+    planFetch.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      if (
+        (init?.method || 'GET') === 'GET' &&
+        canonicalRequestPath(url) === '/Plone/archive/news/launch'
+      ) {
+        return json({ ...existingLaunch, '@id': url.toString() });
+      }
+      return successfulFetch()(resource, init);
+    });
+    const plan = await createTransferPlan(
+      { ...input, overwrite: true },
+      planFetch as typeof fetch,
+    );
+
+    const posts: Array<Record<string, unknown>> = [];
+    const execFetch = vi.fn(
+      async (resource: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(resource));
+        const method = init?.method || 'GET';
+        const path = canonicalRequestPath(url);
+        if (method === 'GET' && path === '/Plone/archive/news/launch') {
+          return json({ ...existingLaunch, '@id': url.toString() });
+        }
+        if (method === 'DELETE') return new Response(null, { status: 204 });
+        if (method === 'POST' && path.endsWith('/archive/news')) {
+          const body = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          posts.push(body);
+          // The incoming `launch` (title "Launch") fails; the restore succeeds.
+          if (body.title === 'Launch') {
+            return json({ error: { message: 'recreate failed' } }, 500);
+          }
+          return json({ ...body, '@id': url.toString() }, 201);
+        }
+        return successfulFetch()(resource, init);
+      },
+    );
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      execFetch as typeof fetch,
+    );
+
+    expect(report.failed).toMatchObject({
+      destinationUrl: 'https://new.example/Plone/archive/news/launch',
+      restored: true,
+    });
+    // The rollback re-created the captured original, preserving its UID.
+    expect(
+      posts.some(
+        (body) =>
+          body.title === 'Old destination launch' && body.UID === 'launch-uid',
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('SSRF policy', () => {
+  function thrown(fn: () => void): TransferError {
+    try {
+      fn();
+    } catch (error) {
+      return error as TransferError;
+    }
+    throw new Error('expected the call to throw');
+  }
+
+  test('reads the allowlist and private-network flag from the environment', () => {
+    expect(readSsrfPolicyFromEnv({})).toEqual({
+      allowedHosts: undefined,
+      blockPrivateNetwork: false,
+    });
+    expect(
+      readSsrfPolicyFromEnv({
+        MR_SCOTTY_ALLOWED_HOSTS: 'a.example, B.example ',
+        MR_SCOTTY_BLOCK_PRIVATE_NETWORK: 'true',
+      }),
+    ).toEqual({
+      allowedHosts: ['a.example', 'b.example'],
+      blockPrivateNetwork: true,
+    });
+  });
+
+  test('an allowlist refuses hosts that are not on it', () => {
+    const policy = { allowedHosts: ['good.example'] };
+    expect(() =>
+      assertHostAllowed(
+        new URL('https://good.example/x'),
+        'Source URL',
+        policy,
+      ),
+    ).not.toThrow();
+    expect(
+      thrown(() =>
+        assertHostAllowed(
+          new URL('https://evil.example/x'),
+          'Source URL',
+          policy,
+        ),
+      ),
+    ).toMatchObject({ code: 'host_not_allowed', status: 403 });
+  });
+
+  test('blockPrivateNetwork refuses loopback, private and link-local hosts', () => {
+    const policy = { blockPrivateNetwork: true };
+    for (const host of [
+      '127.0.0.1',
+      '10.0.0.5',
+      '192.168.1.1',
+      '172.16.0.1',
+      '169.254.169.254',
+      'localhost',
+      'db.internal',
+      '[::1]',
+    ]) {
+      expect(
+        thrown(() =>
+          assertHostAllowed(
+            new URL(`http://${host}/x`),
+            'Destination URL',
+            policy,
+          ),
+        ),
+      ).toMatchObject({ code: 'private_network_blocked', status: 403 });
+    }
+    expect(() =>
+      assertHostAllowed(
+        new URL('https://public.example/x'),
+        'Destination URL',
+        policy,
+      ),
+    ).not.toThrow();
+  });
+
+  test('createTransferPlan refuses a disallowed host before any request', async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      createTransferPlan(input, fetchImpl as unknown as typeof fetch, {
+        allowedHosts: ['only.example'],
+      }),
+    ).rejects.toMatchObject({ code: 'host_not_allowed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
