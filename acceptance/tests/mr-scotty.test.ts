@@ -136,7 +136,7 @@ test.describe('Mr. Scotty', () => {
     await typeSourceUrl(page, `${sourceApiURL}/${sourceId}`);
 
     await page.getByRole('button', { name: 'Inspect transfer' }).click();
-    await expect(page.getByText('Preflight ready')).toBeVisible();
+    await expect(page.getByText('Transfer plan')).toBeVisible();
     await expect(
       page.getByText(`${destinationApiURL}/${sourceId}`, { exact: true }),
     ).toBeVisible();
@@ -286,14 +286,23 @@ test.describe('Mr. Scotty', () => {
 
     await page.goto('/mr-scotty');
     await waitForMrScottyHydration(page);
-    // The native radio input is visually hidden behind its styled control, so
-    // target the option's label text instead.
-    await page.getByText('Replace existing content').click();
+    // Fill first: typeSourceUrl waits out hydration, after which the policy
+    // selection sticks. The native radio input is visually hidden behind its
+    // styled card, so target the option's label text and confirm it took.
     await typeSourceUrl(page, `${sourceApiURL}/${sourceId}`);
+    const replaceRadio = page.getByRole('radio', {
+      name: /Replace existing content/,
+    });
+    await expect(async () => {
+      await page.getByText('Replace existing content').click();
+      await expect(replaceRadio).toBeChecked();
+    }).toPass({ timeout: 10_000 });
 
     await page.getByRole('button', { name: 'Inspect transfer' }).click();
-    await expect(page.getByText('Preflight ready')).toBeVisible();
-    await expect(page.getByText('Replace Document')).toBeVisible();
+    await expect(page.getByText('Transfer plan')).toBeVisible();
+    await expect(
+      page.getByRole('cell', { name: 'replace' }).first(),
+    ).toBeVisible();
 
     // A destructive replace is confirmed in a dialog before it runs.
     await page.getByRole('button', { name: 'Beam content' }).click();

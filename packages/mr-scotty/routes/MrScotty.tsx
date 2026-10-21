@@ -9,7 +9,6 @@ import {
   RadioGroup,
   Select,
   SelectItem,
-  Separator,
   Tab,
   TabList,
   TabPanel,
@@ -216,6 +215,97 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
+type IconName =
+  | 'beam'
+  | 'source'
+  | 'destination'
+  | 'options'
+  | 'link'
+  | 'info'
+  | 'warning'
+  | 'arrow'
+  | 'check'
+  | 'close';
+
+function Icon({ name, className }: { name: IconName; className?: string }) {
+  const paths: Record<IconName, React.ReactNode> = {
+    beam: (
+      <>
+        <path d="M12 2v6" />
+        <path d="M5.5 10.5 12 8l6.5 2.5" />
+        <path d="M4 13.5c0 4.5 3.6 8 8 8s8-3.5 8-8l-8-3-8 3Z" />
+        <path d="M12 10.5v11" />
+      </>
+    ),
+    source: (
+      <>
+        <rect x="3" y="7" width="18" height="12" rx="2" />
+        <path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" />
+        <path d="M7 12h10" />
+      </>
+    ),
+    destination: (
+      <>
+        <path d="M12 3v12" />
+        <path d="m7 10 5 5 5-5" />
+        <path d="M5 21h14" />
+      </>
+    ),
+    options: (
+      <>
+        <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+        <path d="M1 14h6M9 8h6M17 16h6" />
+      </>
+    ),
+    link: (
+      <>
+        <path d="M9 17H7A5 5 0 0 1 7 7h2" />
+        <path d="M15 7h2a5 5 0 0 1 0 10h-2" />
+        <path d="M8 12h8" />
+      </>
+    ),
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8h.01M11 12h1v4h1" />
+      </>
+    ),
+    warning: (
+      <>
+        <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+        <path d="M12 9v4M12 17h.01" />
+      </>
+    ),
+    arrow: (
+      <>
+        <path d="M5 12h14" />
+        <path d="m13 6 6 6-6 6" />
+      </>
+    ),
+    check: <path d="M20 6 9 17l-5-5" />,
+    close: (
+      <>
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
 function AuthenticationFields({
   prefix,
   defaultMode,
@@ -278,46 +368,107 @@ function AuthenticationFields({
 }
 
 function SectionCard({
+  icon,
   title,
   description,
   children,
 }: {
+  icon: IconName;
   title: string;
   description: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-quanta-smoke bg-quanta-air p-6">
-      <header className="mb-4">
-        <h2 className="text-base font-semibold text-quanta-space">{title}</h2>
-        <p className="mt-0.5 text-sm text-quanta-pigeon">{description}</p>
+      <header className="mb-4 flex items-center gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-quanta-azure/15 text-quanta-sapphire">
+          <Icon name={icon} className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-quanta-space">{title}</h2>
+          <p className="mt-0.5 text-sm text-quanta-pigeon">{description}</p>
+        </div>
       </header>
       {children}
     </section>
   );
 }
 
-const STATUS_BADGE: Record<string, string> = {
+function isDependency(
+  plan: TransferPlan,
+  operation: TransferPlan['operations'][number],
+): boolean {
+  return operation.kind === 'content' && operation.sourceUrl !== plan.sourceUrl;
+}
+
+function operationType(
+  plan: TransferPlan,
+  operation: TransferPlan['operations'][number],
+): string {
+  if (operation.kind === 'placeholder') return 'Document (structural)';
+  if (isDependency(plan, operation)) return `${operation.type} (dependency)`;
+  return operation.type;
+}
+
+const STATUS_TAG: Record<string, string> = {
   create: 'bg-green-100 text-green-700',
   reuse: 'bg-quanta-snow text-quanta-pigeon',
   replace: 'bg-quanta-ballet text-quanta-candy',
 };
 
-function operationLabel(operation: TransferPlan['operations'][number]): string {
-  if (operation.status === 'reuse') return 'Reuse';
-  if (operation.status === 'replace') return `Replace ${operation.type}`;
-  return operation.kind === 'placeholder'
-    ? 'Create Document'
-    : `Create ${operation.type}`;
-}
-
-function CountChip({ label, className }: { label: string; className: string }) {
+function StatusTag({ status }: { status: string }) {
   return (
     <span
-      className={`rounded-full px-2.5 py-1 text-xs font-medium ${className}`}
+      className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold tracking-wide uppercase ${
+        STATUS_TAG[status] ?? 'bg-quanta-snow text-quanta-pigeon'
+      }`}
     >
-      {label}
+      {status}
     </span>
+  );
+}
+
+function StatPill({
+  count,
+  label,
+  className,
+}: {
+  count: number;
+  label: string;
+  className: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${className}`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {count} {label}
+    </span>
+  );
+}
+
+function Callout({
+  tone = 'neutral',
+  children,
+}: {
+  tone?: 'info' | 'warning' | 'neutral';
+  children: React.ReactNode;
+}) {
+  const styles = {
+    info: 'bg-quanta-azure/10 text-quanta-space',
+    warning: 'bg-quanta-ballet text-quanta-candy',
+    neutral: 'bg-quanta-snow text-quanta-pigeon',
+  }[tone];
+  return (
+    <div
+      className={`flex items-start gap-2.5 rounded-lg p-3 text-sm ${styles}`}
+    >
+      <Icon
+        name={tone === 'warning' ? 'warning' : 'info'}
+        className="mt-0.5 h-4 w-4 shrink-0"
+      />
+      <div className="min-w-0">{children}</div>
+    </div>
   );
 }
 
@@ -326,174 +477,262 @@ function PlanReview({
 }: {
   result: Extract<ActionResult, { ok: true }>;
 }) {
-  const creates = result.plan.operations.filter((o) => o.status === 'create');
-  const reuses = result.plan.operations.filter((o) => o.status === 'reuse');
-  const replacements = result.plan.operations.filter(
-    (o) => o.status === 'replace',
-  );
+  const { plan } = result;
+  const creates = plan.operations.filter((o) => o.status === 'create');
+  const reuses = plan.operations.filter((o) => o.status === 'reuse');
+  const replacements = plan.operations.filter((o) => o.status === 'replace');
+  const dependencies = plan.operations.filter((o) => isDependency(plan, o));
+  const transferReport =
+    result.intent === 'transfer' ? result.report : undefined;
+  const failed = transferReport?.failed;
 
   return (
     <section
-      className="rounded-xl border border-quanta-smoke bg-quanta-air p-6"
+      className="overflow-hidden rounded-xl border border-quanta-smoke bg-quanta-air"
       aria-live="polite"
     >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-quanta-smoke px-6 py-4">
         <h2 className="text-base font-semibold text-quanta-space">
-          {result.intent === 'transfer'
-            ? result.report.failed
+          {transferReport
+            ? failed
               ? 'Transfer incomplete'
               : 'Transfer complete'
-            : 'Preflight ready'}
+            : 'Transfer plan'}
         </h2>
         <div className="flex flex-wrap gap-2">
-          <CountChip
-            label={`${creates.length} create`}
+          <StatPill
+            count={creates.length}
+            label="create"
             className="bg-green-100 text-green-700"
           />
-          <CountChip
-            label={`${replacements.length} replace`}
+          <StatPill
+            count={replacements.length}
+            label="replace"
             className="bg-quanta-ballet text-quanta-candy"
           />
-          <CountChip
-            label={`${reuses.length} reuse`}
+          <StatPill
+            count={reuses.length}
+            label="reuse"
             className="bg-quanta-snow text-quanta-pigeon"
           />
+          {dependencies.length > 0 && (
+            <StatPill
+              count={dependencies.length}
+              label="dependency"
+              className="bg-quanta-azure/20 text-quanta-sapphire"
+            />
+          )}
         </div>
+        <span className="ml-auto font-mono text-xs break-all text-quanta-pigeon">
+          {plan.destinationPath}
+        </span>
       </div>
-      <p className="mt-1 font-mono text-sm break-all text-quanta-pigeon">
-        {result.plan.destinationPath}
-      </p>
 
-      <Separator className="my-4 bg-quanta-smoke" />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[32rem] border-collapse text-sm">
+          <thead>
+            <tr className="text-left text-[11px] tracking-wide text-quanta-pigeon uppercase">
+              <th className="px-6 py-2 font-semibold">Destination path</th>
+              <th className="px-3 py-2 font-semibold">Type</th>
+              <th className="px-6 py-2 font-semibold">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plan.operations.map((operation) => {
+              const dependency = isDependency(plan, operation);
+              return (
+                <tr
+                  key={operation.destinationUrl}
+                  className={`border-t border-quanta-smoke ${
+                    operation.status === 'replace' ? 'bg-quanta-ballet/60' : ''
+                  }`}
+                >
+                  <td className="px-6 py-2.5">
+                    <span className="flex items-center gap-2 font-mono text-[13px] break-all text-quanta-space">
+                      {dependency && (
+                        <Icon
+                          name="link"
+                          className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
+                        />
+                      )}
+                      {operation.destinationUrl}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 text-quanta-pigeon">
+                    {operationType(plan, operation)}
+                  </td>
+                  <td className="px-6 py-2.5">
+                    <StatusTag status={operation.status} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-      <ol className="flex flex-col gap-2">
-        {result.plan.operations.map((operation) => (
-          <li
-            key={operation.destinationUrl}
-            className={`flex flex-wrap items-center justify-between gap-3 rounded-lg px-4 py-3 text-sm ${
-              operation.status === 'replace'
-                ? 'bg-quanta-ballet'
-                : 'bg-quanta-snow'
-            }`}
-          >
-            <span className="min-w-0 break-all text-quanta-space">
-              {operation.destinationUrl}
-            </span>
-            <span
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                STATUS_BADGE[operation.status]
-              }`}
-            >
-              {operationLabel(operation)}
-            </span>
-          </li>
-        ))}
-      </ol>
-
-      {result.intent === 'transfer' &&
-        (result.report.failed ? (
-          <div className="mt-4 rounded-lg bg-quanta-ballet p-4 text-sm text-quanta-space">
-            <p className="font-semibold text-quanta-candy">
-              Stopped before finishing
-            </p>
-            <p className="mt-1">
-              Created {result.report.created.length}, replaced{' '}
-              {result.report.replaced.length} before{' '}
-              <span className="font-mono break-all">
-                {result.report.failed.destinationUrl}
-              </span>{' '}
-              failed: {result.report.failed.message}
-            </p>
-            {result.report.failed.restored !== undefined && (
-              <p className="mt-1 text-xs text-quanta-pigeon">
-                {result.report.failed.restored
-                  ? 'The original content at that path was restored.'
-                  : 'The original content at that path could not be restored.'}
-              </p>
-            )}
-            <p className="mt-1 text-xs text-quanta-pigeon">
-              Error code: {result.report.failed.code}
-            </p>
-          </div>
-        ) : (
-          <p className="mt-4 text-sm font-medium text-quanta-space">
-            Created {result.report.created.length} item
-            {result.report.created.length === 1 ? '' : 's'} and replaced{' '}
-            {result.report.replaced.length} item
-            {result.report.replaced.length === 1 ? '' : 's'}. Final destination:{' '}
+      <div className="flex flex-col gap-3 px-6 py-4">
+        {dependencies.length > 0 && (
+          <Callout tone="info">
+            {dependencies.length} internal image
+            {dependencies.length === 1 ? '' : 's'} referenced by the content{' '}
+            {dependencies.length === 1 ? 'is' : 'are'} beamed alongside it, and
+            the block URLs are rewritten to the destination.
+          </Callout>
+        )}
+        {replacements.length > 0 && !transferReport && (
+          <Callout tone="warning">
+            <b className="font-semibold">Replace</b> deletes the existing item
+            at its path before recreating it. You confirm this before anything
+            is written.
+          </Callout>
+        )}
+        {transferReport && !failed && (
+          <p className="text-sm font-medium text-quanta-space">
+            Created {transferReport.created.length} item
+            {transferReport.created.length === 1 ? '' : 's'} and replaced{' '}
+            {transferReport.replaced.length} item
+            {transferReport.replaced.length === 1 ? '' : 's'}. Final
+            destination:{' '}
             <a
               className="text-quanta-sapphire underline"
-              href={result.report.destinationUrl}
+              href={transferReport.destinationUrl}
             >
-              {result.report.destinationUrl}
+              {transferReport.destinationUrl}
             </a>
           </p>
-        ))}
+        )}
+        {failed && transferReport && (
+          <Callout tone="warning">
+            <span className="font-semibold">Stopped before finishing.</span>{' '}
+            Created {transferReport.created.length}, replaced{' '}
+            {transferReport.replaced.length} before{' '}
+            <span className="font-mono break-all">{failed.destinationUrl}</span>{' '}
+            failed: {failed.message}
+            {failed.restored !== undefined && (
+              <span className="mt-1 block text-xs">
+                {failed.restored
+                  ? 'The original content at that path was restored.'
+                  : 'The original content at that path could not be restored.'}
+              </span>
+            )}
+            <span className="mt-1 block text-xs">
+              Error code: {failed.code}
+            </span>
+          </Callout>
+        )}
+      </div>
     </section>
   );
 }
 
-function ActivityPanel({ result }: { result: ActionResult | undefined }) {
-  if (!result) {
-    return (
-      <p className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-6 text-sm text-quanta-pigeon">
-        No transfers yet. Runs you start appear here with their report. Live
-        progress and history arrive with persistent jobs.
-      </p>
-    );
-  }
+function ActivityEmpty({ hint }: { hint: string }) {
+  return (
+    <div className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-8 text-center">
+      <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-quanta-snow text-quanta-pigeon">
+        <Icon name="beam" className="h-5 w-5" />
+      </span>
+      <p className="text-sm font-medium text-quanta-space">No transfers yet</p>
+      <p className="mx-auto mt-1 max-w-sm text-sm text-quanta-pigeon">{hint}</p>
+    </div>
+  );
+}
 
-  if (result.ok === false) {
-    return (
-      <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
-        <p className="text-sm font-semibold text-quanta-candy">
-          Transfer failed
-        </p>
-        <p className="mt-1 text-sm text-quanta-space">{result.error.message}</p>
-        <p className="mt-2 text-xs text-quanta-pigeon">
-          Error code: {result.error.code}
-        </p>
-      </div>
-    );
-  }
-
-  if (result.intent !== 'transfer') {
-    return (
-      <p className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-6 text-sm text-quanta-pigeon">
-        Preflight ran, but nothing has been beamed yet. Completed transfers show
-        up here.
-      </p>
-    );
-  }
-
-  const failed = result.report.failed;
+function JobCard({
+  tone,
+  title,
+  children,
+}: {
+  tone: 'done' | 'failed';
+  title: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
-      <div className="flex items-center gap-2">
+      <div className="flex items-start gap-3">
         <span
-          className={`h-2.5 w-2.5 rounded-full ${
-            failed ? 'bg-quanta-candy' : 'bg-green-500'
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+            tone === 'failed'
+              ? 'bg-quanta-ballet text-quanta-candy'
+              : 'bg-green-100 text-green-700'
           }`}
-        />
-        <p className="text-sm font-semibold text-quanta-space">
-          {failed ? 'Partially beamed' : 'Beamed'} {result.form.sourceUrl}
-        </p>
-      </div>
-      <p className="mt-1 text-sm text-quanta-pigeon">
-        Created {result.report.created.length}, replaced{' '}
-        {result.report.replaced.length}, reused {result.report.reused.length}.{' '}
-        <a
-          className="text-quanta-sapphire underline"
-          href={result.report.destinationUrl}
         >
-          Open destination
-        </a>
-      </p>
-      {failed && (
-        <p className="mt-2 text-xs text-quanta-candy">
-          Stopped at {failed.destinationUrl}: {failed.message}
+          <Icon
+            name={tone === 'failed' ? 'close' : 'check'}
+            className="h-4 w-4"
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold break-words text-quanta-space">
+            {title}
+          </p>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityPanel({ result }: { result: ActionResult | undefined }) {
+  function body() {
+    if (!result) {
+      return (
+        <ActivityEmpty hint="Runs you start appear here with their report." />
+      );
+    }
+    if (result.ok === false) {
+      return (
+        <JobCard tone="failed" title="Transfer failed to start">
+          <p className="mt-1 text-sm text-quanta-space">
+            {result.error.message}
+          </p>
+          <p className="mt-1 text-xs text-quanta-pigeon">
+            Error code: {result.error.code}
+          </p>
+        </JobCard>
+      );
+    }
+    if (result.intent !== 'transfer') {
+      return (
+        <ActivityEmpty hint="Preflight ran, but nothing has been beamed yet. Completed transfers show up here." />
+      );
+    }
+
+    const failed = result.report.failed;
+    return (
+      <JobCard
+        tone={failed ? 'failed' : 'done'}
+        title={`${failed ? 'Partially beamed' : 'Beamed'} ${result.form.sourceUrl}`}
+      >
+        <p className="mt-1 font-mono text-xs break-all text-quanta-pigeon">
+          {result.form.sourceUrl} → {result.report.destinationUrl}
         </p>
-      )}
+        <p className="mt-2 text-sm text-quanta-pigeon">
+          Created {result.report.created.length}, replaced{' '}
+          {result.report.replaced.length}, reused {result.report.reused.length}.{' '}
+          <a
+            className="text-quanta-sapphire underline"
+            href={result.report.destinationUrl}
+          >
+            Open destination
+          </a>
+        </p>
+        {failed && (
+          <p className="mt-2 text-xs text-quanta-candy">
+            Stopped at {failed.destinationUrl}: {failed.message}
+          </p>
+        )}
+      </JobCard>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {body()}
+      <p className="text-center text-xs text-quanta-pigeon">
+        Live progress, cancellation, and run history arrive with persistent
+        jobs.
+      </p>
     </div>
   );
 }
@@ -507,27 +746,39 @@ export default function MrScotty() {
   const [tab, setTab] = useState<'new' | 'activity'>('new');
   const [policy, setPolicy] = useState<ConflictPolicy>('fail');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sourceUrlValue, setSourceUrlValue] = useState(
+    result?.ok ? result.form.sourceUrl : '',
+  );
+  const [destinationUrlValue, setDestinationUrlValue] =
+    useState(destinationUrl);
 
   useEffect(() => {
     if (!result?.ok) return;
     setPolicy(result.form.overwrite ? 'replace' : 'fail');
+    setSourceUrlValue(result.form.sourceUrl);
+    setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
   }, [result]);
 
   return (
     <Container as="main" width="layout" className="w-full px-6 py-12">
-      <header className="mb-6 flex flex-col gap-2">
-        <p className="text-xs font-medium tracking-widest text-quanta-pigeon uppercase">
-          Site Setup · Content
-        </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-quanta-space">
-          Mr. Scotty
-        </h1>
-        <p className="max-w-2xl text-sm text-quanta-pigeon">
-          Beam content between any <code>plone.restapi</code> servers. Paths and
-          UUIDs are preserved, structure is recreated, and internal image
-          dependencies travel with their content.
-        </p>
+      <header className="mb-6 flex items-start gap-4">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-quanta-sapphire to-[#0a5fa6] text-white shadow-sm">
+          <Icon name="beam" className="h-6 w-6" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-xs font-medium tracking-widest text-quanta-pigeon uppercase">
+            Site Setup · Content
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-quanta-space">
+            Mr. Scotty
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm text-quanta-pigeon">
+            Beam content between any <code>plone.restapi</code> servers. Paths
+            and UUIDs are preserved, structure is recreated, and internal image
+            dependencies travel with their content.
+          </p>
+        </div>
       </header>
 
       <RACTabs
@@ -549,6 +800,7 @@ export default function MrScotty() {
             )}
             <div className="flex flex-col gap-6">
               <SectionCard
+                icon="source"
                 title="Source"
                 description="The content object to read from."
               >
@@ -559,9 +811,8 @@ export default function MrScotty() {
                     name="sourceUrl"
                     type="url"
                     placeholder="https://old.example/Plone/news/item"
-                    defaultValue={
-                      result?.ok ? result.form.sourceUrl : undefined
-                    }
+                    value={sourceUrlValue}
+                    onChange={setSourceUrlValue}
                     isRequired
                   />
                   <AuthenticationFields
@@ -572,6 +823,7 @@ export default function MrScotty() {
               </SectionCard>
 
               <SectionCard
+                icon="destination"
                 title="Destination"
                 description="The container content is beamed into."
               >
@@ -581,43 +833,84 @@ export default function MrScotty() {
                     description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
                     name="destinationUrl"
                     type="url"
-                    defaultValue={destinationUrl}
+                    value={destinationUrlValue}
+                    onChange={setDestinationUrlValue}
                     isRequired
                   />
                   <AuthenticationFields
                     prefix="destination"
                     defaultMode="session"
                   />
+                  <div className="flex items-center gap-2 rounded-lg bg-quanta-snow px-3 py-2.5 text-xs text-quanta-pigeon">
+                    <span className="truncate font-mono text-quanta-space">
+                      {sourceUrlValue || 'source URL'}
+                    </span>
+                    <Icon name="arrow" className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate font-mono text-quanta-space">
+                      {(destinationUrlValue || 'destination').replace(
+                        /\/+$/,
+                        '',
+                      )}
+                      /…
+                    </span>
+                  </div>
                 </div>
               </SectionCard>
 
               <SectionCard
+                icon="options"
                 title="Options"
                 description="How Mr. Scotty resolves a path that already exists."
               >
                 <RadioGroup
                   aria-label="Conflict policy"
+                  orientation="vertical"
                   value={policy}
                   onChange={(value) => setPolicy(value as ConflictPolicy)}
                   isDisabled={busy}
+                  className="w-full"
                 >
-                  <Radio value="fail">
+                  <Radio
+                    value="fail"
+                    className={({ isSelected }: { isSelected: boolean }) =>
+                      `w-full items-start rounded-lg border p-3 ${
+                        isSelected
+                          ? 'border-quanta-sapphire bg-quanta-azure/10'
+                          : 'border-quanta-smoke'
+                      }`
+                    }
+                  >
                     <span className="flex flex-col">
-                      <span className="font-medium text-quanta-space">
+                      <span className="flex items-center gap-2 font-medium text-quanta-space">
                         Fail
+                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-green-700 uppercase">
+                          safe
+                        </span>
                       </span>
-                      <span className="text-xs text-quanta-pigeon">
+                      <span className="mt-0.5 text-xs text-quanta-pigeon">
                         Abort before any write when the path or a UUID collides.
-                        The safe default.
+                        The default.
                       </span>
                     </span>
                   </Radio>
-                  <Radio value="replace">
+                  <Radio
+                    value="replace"
+                    className={({ isSelected }: { isSelected: boolean }) =>
+                      `w-full items-start rounded-lg border p-3 ${
+                        isSelected
+                          ? 'border-quanta-sapphire bg-quanta-azure/10'
+                          : 'border-quanta-smoke'
+                      }`
+                    }
+                  >
                     <span className="flex flex-col">
-                      <span className="font-medium text-quanta-space">
+                      <span className="flex items-center gap-2 font-medium text-quanta-space">
                         Replace existing content
+                        <span className="rounded bg-quanta-ballet px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-candy uppercase">
+                          destructive
+                        </span>
                       </span>
-                      <span className="text-xs text-quanta-pigeon">
+                      <span className="mt-0.5 text-xs text-quanta-pigeon">
                         Delete the item at the source-relative path, then
                         recreate it. Unrelated siblings and parents are
                         preserved. Confirmed before it runs.
