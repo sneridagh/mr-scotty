@@ -1,0 +1,1 @@
+Rebuilt the Mr. Scotty route as a Site Setup control panel using Quanta/React Aria components, with a `New transfer`/`Activity` layout, a conflict-policy selector, and a confirmation step before a destructive replace. @sneridagh
