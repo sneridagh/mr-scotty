@@ -1,8 +1,8 @@
 import type { SVGProps } from 'react';
 
-// The Mr. Scotty mark: a transporter beam. Shared by the control panel
-// header and the Site Setup entry.
-export const beamPaths = (
+// The Mr. Scotty mark: a transporter beam. Used for the Site Setup entry
+// and the empty Activity tab.
+const beamPaths = (
   <>
     <path d="M12 2v6" />
     <path d="M5.5 10.5 12 8l6.5 2.5" />

@@ -50,6 +50,17 @@ async function waitForMrScottyHydration(page: Page) {
   ).toHaveAttribute('value', 'transfer');
 }
 
+async function expectBeamed(page: Page, sourceUrl: string) {
+  // A finished transfer switches to the Activity tab, which reports it.
+  await expect(page.getByRole('tab', { name: 'Activity' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(
+    page.getByText(`Beamed ${sourceUrl}`, { exact: true }),
+  ).toBeVisible();
+}
+
 async function getJson(
   page: Page,
   url: string,
@@ -153,7 +164,7 @@ test.describe('Mr. Scotty', () => {
     ).toBeVisible();
 
     await page.getByRole('button', { name: 'Beam content' }).click();
-    await expect(page.getByText('Transfer complete')).toBeVisible();
+    await expectBeamed(page, `${sourceApiURL}/${sourceId}`);
 
     const destinationHeaders = bearerAuth(destinationToken);
     const destinationDocument = await getJson(
@@ -312,13 +323,13 @@ test.describe('Mr. Scotty', () => {
     await page.getByRole('button', { name: 'Inspect transfer' }).click();
     await expect(page.getByText('Transfer plan')).toBeVisible();
     await expect(
-      page.getByRole('cell', { name: 'replace' }).first(),
+      page.getByRole('gridcell', { name: 'replace' }).first(),
     ).toBeVisible();
 
     // A destructive replace is confirmed in a dialog before it runs.
     await page.getByRole('button', { name: 'Beam content' }).click();
     await page.getByRole('button', { name: 'Delete & beam' }).click();
-    await expect(page.getByText('Transfer complete')).toBeVisible();
+    await expectBeamed(page, `${sourceApiURL}/${sourceId}`);
 
     const destinationHeaders = bearerAuth(destinationToken);
     const destinationDocument = await getJson(
