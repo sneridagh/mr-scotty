@@ -1,5 +1,6 @@
 import type { ConfigType } from '@plone/registry';
 import installRoutes from './config/routes';
+import BeamIcon from './components/BeamIcon';
 
 export default function install(config: ConfigType) {
   installRoutes(config);
@@ -14,6 +15,12 @@ export default function install(config: ConfigType) {
       group: 'Content',
     },
   ];
+  // Its Site Setup icon; the description is the
+  // `cmsui.controlpanelDescriptions.mr-scotty` translation in `locales`.
+  config.settings.controlPanelsIcons = {
+    ...config.settings.controlPanelsIcons,
+    'mr-scotty': BeamIcon,
+  };
 
   return config;
 }

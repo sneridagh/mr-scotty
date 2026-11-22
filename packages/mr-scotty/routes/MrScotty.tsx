@@ -35,6 +35,7 @@ import {
   type TransferPlan,
   type TransferReport,
 } from '../server/transfer.server';
+import { beamPaths } from '../components/BeamIcon';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
 type ConflictPolicy = 'fail' | 'replace';
@@ -229,14 +230,7 @@ type IconName =
 
 function Icon({ name, className }: { name: IconName; className?: string }) {
   const paths: Record<IconName, React.ReactNode> = {
-    beam: (
-      <>
-        <path d="M12 2v6" />
-        <path d="M5.5 10.5 12 8l6.5 2.5" />
-        <path d="M4 13.5c0 4.5 3.6 8 8 8s8-3.5 8-8l-8-3-8 3Z" />
-        <path d="M12 10.5v11" />
-      </>
-    ),
+    beam: beamPaths,
     source: (
       <>
         <rect x="3" y="7" width="18" height="12" rx="2" />
