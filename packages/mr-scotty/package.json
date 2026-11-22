@@ -32,7 +32,8 @@
     "@plone/react-router": "workspace:*",
     "@plone/registry": "workspace:*",
     "react-aria-components": "catalog:",
-    "react-router": "catalog:"
+    "react-router": "catalog:",
+    "tailwindcss": "catalog:"
   },
   "peerDependencies": {
     "i18next": "catalog:",
