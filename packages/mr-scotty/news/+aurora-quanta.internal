@@ -1,0 +1,1 @@
+Tracked the latest Plone Aurora `main` and moved the add-on from `@plone/components/quanta` to the new `@plone/quanta` and `@plone/icons` packages. @sneridagh

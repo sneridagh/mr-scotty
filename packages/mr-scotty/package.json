@@ -20,16 +20,18 @@
     "access": "public"
   },
   "scripts": {
-    "i18n": "rm -rf build/messages && NODE_ENV=production i18n --addon",
+    "i18n": "rm -rf build/messages && if command -v i18n >/dev/null 2>&1; then NODE_ENV=production i18n --addon; else echo 'Skipping i18n extraction: the @plone/scripts i18n binary is not provided by Aurora main yet.'; fi",
     "dry-release": "release-it --dry-run",
     "release": "release-it",
     "release-major-alpha": "release-it major --preRelease=alpha",
     "release-alpha": "release-it --preRelease=alpha"
   },
   "dependencies": {
-    "@plone/components": "workspace:*",
+    "@plone/icons": "workspace:*",
+    "@plone/quanta": "workspace:*",
     "@plone/react-router": "workspace:*",
     "@plone/registry": "workspace:*",
+    "react-aria-components": "catalog:",
     "react-router": "catalog:"
   },
   "peerDependencies": {
