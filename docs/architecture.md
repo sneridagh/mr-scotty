@@ -44,11 +44,28 @@ This boundary will allow the synchronous first slice to move behind a persistent
 
 ## Security
 
-The route requires an authenticated Aurora session.
+The route is gated on the Manager role, not mere authentication: the loader and
+action verify the session against the Manager-only `@controlpanels` endpoint of
+the configured backend before doing any work.
 Explicit credentials are used only in server memory and are never returned in plans or reports.
 Parent and navigation-root URLs are rebased to the origin supplied by you, and HTTP redirects are not followed.
 
-Before production use, add deployment-level host allowlists, private-network policy, DNS rebinding protection, request and content size limits, audit logs, and encrypted durable secret handling.
+Outbound requests are subject to an opt-in SSRF policy, read from the
+environment so local development and acceptance tests keep working unconfigured:
+
+- `MR_SCOTTY_ALLOWED_HOSTS` — a comma-separated allowlist; when set, the source
+  and destination hosts must match one of its entries exactly.
+- `MR_SCOTTY_BLOCK_PRIVATE_NETWORK` — when truthy, refuses loopback, private,
+  and link-local hosts (including the cloud metadata address).
+
+A destructive `replace` captures the existing content before deleting it and
+restores it best-effort if the recreate fails; when an operation fails mid-run,
+the executor returns a partial report naming what was written rather than
+discarding the progress.
+
+Before production use, still add DNS rebinding protection (resolve-and-pin),
+request and content size limits, audit logs, encrypted durable secret handling,
+and restore of binary fields on a rolled-back replace.
 
 ## Fidelity roadmap
 
@@ -64,4 +81,6 @@ TODO:
 - Add querystring preview and bulk dependency planning.
 - Add persistent jobs, SSE progress, cancellation, retry, and restart recovery.
 - Transfer external image URLs and images embedded in rich-text HTML.
-- Add configurable SSRF controls and production resource limits.
+- Add production resource limits, DNS rebinding protection, and saved
+  connections with encrypted secrets (the SSRF allowlist and private-network
+  policy are now in place).

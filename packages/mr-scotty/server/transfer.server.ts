@@ -75,6 +75,18 @@ export interface TransferReport {
     kind: TransferOperation['kind'];
   }>;
   reused: string[];
+  /**
+   * Set when an operation failed mid-run. Everything in `created`/`replaced`
+   * happened before it; nothing after it was attempted. `restored` reports
+   * whether a half-done replace put its original content back.
+   */
+  failed?: {
+    sourceUrl: string;
+    destinationUrl: string;
+    code: string;
+    message: string;
+    restored?: boolean;
+  };
   destinationUrl: string;
 }
 
@@ -87,6 +99,113 @@ export class TransferError extends Error {
     this.name = 'TransferError';
     this.code = code;
     this.status = status;
+  }
+}
+
+/**
+ * Deployment-level SSRF controls. Both are opt-in so local development and the
+ * acceptance suite (which beam between loopback backends) keep working with no
+ * configuration; production sets them to lock outbound requests down.
+ */
+export interface SsrfPolicy {
+  /** When set, source and destination hosts must match one of these exactly. */
+  allowedHosts?: string[];
+  /** When true, loopback/private/link-local hosts are refused. */
+  blockPrivateNetwork?: boolean;
+}
+
+function currentEnv(): Record<string, string | undefined> {
+  const globalProcess = (
+    globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+    }
+  ).process;
+  return globalProcess?.env ?? {};
+}
+
+export function readSsrfPolicyFromEnv(
+  env: Record<string, string | undefined> = currentEnv(),
+): SsrfPolicy {
+  const allowedHosts = (env.MR_SCOTTY_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  return {
+    allowedHosts: allowedHosts.length > 0 ? allowedHosts : undefined,
+    blockPrivateNetwork: /^(1|true|yes|on)$/i.test(
+      env.MR_SCOTTY_BLOCK_PRIVATE_NETWORK || '',
+    ),
+  };
+}
+
+function ipv4Octets(hostname: string): number[] | undefined {
+  const match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return undefined;
+  const octets = match.slice(1).map(Number);
+  return octets.every((octet) => octet <= 255) ? octets : undefined;
+}
+
+function isPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal')
+  ) {
+    return true;
+  }
+
+  const octets = ipv4Octets(host);
+  if (octets) {
+    const [a, b] = octets;
+    return (
+      a === 0 ||
+      a === 127 || // loopback
+      a === 10 || // private
+      (a === 172 && b >= 16 && b <= 31) || // private
+      (a === 192 && b === 168) || // private
+      (a === 169 && b === 254) // link-local (incl. cloud metadata 169.254.169.254)
+    );
+  }
+
+  if (host.includes(':')) {
+    // IPv6 literal: loopback, unspecified, unique-local (fc00::/7), link-local.
+    return (
+      host === '::1' ||
+      host === '::' ||
+      host.startsWith('fc') ||
+      host.startsWith('fd') ||
+      host.startsWith('fe8') ||
+      host.startsWith('fe9') ||
+      host.startsWith('fea') ||
+      host.startsWith('feb')
+    );
+  }
+
+  return false;
+}
+
+export function assertHostAllowed(
+  url: URL,
+  label: string,
+  policy: SsrfPolicy,
+): void {
+  const host = url.hostname.toLowerCase();
+  if (policy.allowedHosts && !policy.allowedHosts.includes(host)) {
+    throw new TransferError(
+      'host_not_allowed',
+      `${label} host ${host} is not in the configured allowed hosts.`,
+      403,
+    );
+  }
+  if (policy.blockPrivateNetwork && isPrivateHost(host)) {
+    throw new TransferError(
+      'private_network_blocked',
+      `${label} host ${host} resolves to a private or loopback network and is refused.`,
+      403,
+    );
   }
 }
 
@@ -701,10 +820,15 @@ async function assertUidAvailable(
 export async function createTransferPlan(
   input: TransferInput,
   fetchImpl: Fetch = fetch,
+  policy: SsrfPolicy = readSsrfPolicyFromEnv(),
 ): Promise<TransferPlan> {
   const overwrite = input.overwrite === true;
   const sourceUrl = normalizeUrl(input.sourceUrl, 'Source URL');
   const destinationUrl = normalizeUrl(input.destinationUrl, 'Destination URL');
+  // Referenced resources are rebased to the source origin, so allowing the
+  // source and destination hosts covers every outbound request the plan makes.
+  assertHostAllowed(sourceUrl, 'Source URL', policy);
+  assertHostAllowed(destinationUrl, 'Destination URL', policy);
   const source = await readContentAndRoot(
     sourceUrl,
     input.sourceAuth,
@@ -978,6 +1102,48 @@ export async function executeTransferPlan(
       plan.destinationUrl,
   };
 
+  const destinationRoot = new URL(plan.destinationRootUrl);
+
+  const reportItem = (operation: TransferOperation) => ({
+    sourceUrl: operation.sourceUrl,
+    destinationUrl: operation.destinationUrl,
+    uid: operation.uid,
+    kind: operation.kind,
+  });
+
+  const createAt = (
+    parentUrl: string,
+    payload: Record<string, unknown> | undefined,
+  ) =>
+    requestJson(
+      apiUrlAtRoot(new URL(parentUrl), destinationRoot),
+      destinationAuth,
+      fetchImpl,
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+
+  const recordFailure = (
+    operation: TransferOperation,
+    error: unknown,
+    restored?: boolean,
+  ) => {
+    const transferError =
+      error instanceof TransferError
+        ? error
+        : new TransferError(
+            'unexpected_error',
+            error instanceof Error ? error.message : 'Transfer failed.',
+            500,
+          );
+    report.failed = {
+      sourceUrl: operation.sourceUrl,
+      destinationUrl: operation.destinationUrl,
+      code: transferError.code,
+      message: transferError.message,
+      ...(restored === undefined ? {} : { restored }),
+    };
+  };
+
   for (const operation of plan.operations) {
     if (operation.status === 'reuse') {
       report.reused.push(operation.destinationUrl);
@@ -985,36 +1151,66 @@ export async function executeTransferPlan(
     }
 
     if (operation.status === 'replace') {
-      await requestJson(
-        // plone.restapi exposes content deletion on the normal content URL;
-        // unlike GET/POST, DELETE is not served through the ++api++ traversal.
-        new URL(operation.destinationUrl),
-        destinationAuth,
-        fetchImpl,
-        { method: 'DELETE' },
-      );
+      // Capture the existing content first so a failed recreate can be rolled
+      // back. Binary fields are not restored by this path (no base64 data is
+      // kept), which is tracked in the fidelity roadmap.
+      let restorePayload: Record<string, unknown> | undefined;
+      try {
+        const existing = await requestJson(
+          apiUrlAtRoot(new URL(operation.destinationUrl), destinationRoot),
+          destinationAuth,
+          fetchImpl,
+        );
+        restorePayload = createContentPayload(
+          existing,
+          new URL(operation.destinationUrl),
+        );
+      } catch {
+        restorePayload = undefined;
+      }
+
+      try {
+        await requestJson(
+          // plone.restapi exposes content deletion on the normal content URL;
+          // unlike GET/POST, DELETE is not served through the ++api++ traversal.
+          new URL(operation.destinationUrl),
+          destinationAuth,
+          fetchImpl,
+          { method: 'DELETE' },
+        );
+      } catch (error) {
+        // The original is still in place, so nothing to roll back.
+        recordFailure(operation, error);
+        return report;
+      }
+
+      try {
+        await createAt(operation.destinationParentUrl, operation.payload);
+      } catch (error) {
+        // The original is gone; best-effort restore from the captured payload.
+        let restored = false;
+        if (restorePayload) {
+          try {
+            await createAt(operation.destinationParentUrl, restorePayload);
+            restored = true;
+          } catch {
+            restored = false;
+          }
+        }
+        recordFailure(operation, error, restored);
+        return report;
+      }
+      report.replaced.push(reportItem(operation));
+      continue;
     }
 
-    await requestJson(
-      apiUrlAtRoot(
-        new URL(operation.destinationParentUrl),
-        new URL(plan.destinationRootUrl),
-      ),
-      destinationAuth,
-      fetchImpl,
-      {
-        method: 'POST',
-        body: JSON.stringify(operation.payload),
-      },
-    );
-    const item = {
-      sourceUrl: operation.sourceUrl,
-      destinationUrl: operation.destinationUrl,
-      uid: operation.uid,
-      kind: operation.kind,
-    };
-    if (operation.status === 'replace') report.replaced.push(item);
-    else report.created.push(item);
+    try {
+      await createAt(operation.destinationParentUrl, operation.payload);
+    } catch (error) {
+      recordFailure(operation, error);
+      return report;
+    }
+    report.created.push(reportItem(operation));
   }
 
   return report;
