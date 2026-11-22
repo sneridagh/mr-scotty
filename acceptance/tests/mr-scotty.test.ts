@@ -61,6 +61,17 @@ async function getJson(
 }
 
 test.describe('Mr. Scotty', () => {
+  test('opens from its Site Setup entry', async ({ page }) => {
+    await login(page);
+    await page.goto('/@@controlpanel');
+    await page.getByRole('link', { name: /Mr\. Scotty/ }).click();
+
+    await expect(page).toHaveURL(/\/@@controlpanel\/mr-scotty$/);
+    await expect(
+      page.getByRole('button', { name: 'Inspect transfer' }),
+    ).toBeVisible();
+  });
+
   test('beams a document and its image dependency between Plone servers', async ({
     page,
   }) => {

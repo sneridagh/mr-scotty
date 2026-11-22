@@ -9,9 +9,10 @@ export default function install(config: ConfigType) {
     },
     children: [
       {
-        // Canonical control-panel location, linked from Site Setup.
+        // Canonical control-panel location, linked from Site Setup. Aurora
+        // matches this static path before its `@@controlpanel/:id` route.
         type: 'route',
-        path: '/controlpanel/mr-scotty',
+        path: '/@@controlpanel/mr-scotty',
         file: 'mr-scotty/routes/MrScotty.tsx',
         options: {
           id: 'mr-scotty-controlpanel',
