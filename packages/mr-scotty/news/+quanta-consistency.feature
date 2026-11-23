@@ -1,0 +1,1 @@
+Gave the Mr. Scotty control panel the same header and back button as the core control panels, and built it from Quanta and `@plone/icons` throughout: tabs, plan table, confirmation dialog and links. The Activity tab no longer shows under New transfer. @sneridagh

@@ -1,20 +1,40 @@
 import { useEffect, useState } from 'react';
 import config from '@plone/registry';
+import { useTranslation } from 'react-i18next';
 import {
   Button,
+  Cell,
+  Column,
   Container,
-  Dialog,
-  Modal,
+  Heading,
+  Link,
+  ModalSheet,
   Radio,
   RadioGroup,
+  Row,
   Select,
   SelectItem,
   Tab,
+  Table,
+  TableBody,
+  TableHeader,
   TabList,
   TabPanel,
+  Tabs,
   TextField,
 } from '@plone/quanta';
-import { Tabs as RACTabs } from 'react-aria-components';
+import {
+  ArrowleftIcon,
+  ArrowrightIcon,
+  CheckboxIcon,
+  CloseIcon,
+  FolderIcon,
+  InfoIcon,
+  LinkIcon,
+  SliderIcon,
+  WorldIcon,
+} from '@plone/icons';
+import { Plug } from '@plone/layout/components/Pluggable';
 import { requireAuthCookie } from '@plone/react-router';
 import {
   Form,
@@ -35,7 +55,7 @@ import {
   type TransferPlan,
   type TransferReport,
 } from '../server/transfer.server';
-import { beamPaths } from '../components/BeamIcon';
+import BeamIcon from '../components/BeamIcon';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
 type ConflictPolicy = 'fail' | 'replace';
@@ -216,88 +236,26 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
-type IconName =
-  | 'beam'
-  | 'source'
-  | 'destination'
-  | 'options'
-  | 'link'
-  | 'info'
-  | 'warning'
-  | 'arrow'
-  | 'check'
-  | 'close';
+// The page's icons come from @plone/icons, as in the core control panels; only
+// the beam is Mr. Scotty's own mark.
+const ICONS = {
+  beam: BeamIcon,
+  source: WorldIcon,
+  destination: FolderIcon,
+  options: SliderIcon,
+  link: LinkIcon,
+  info: InfoIcon,
+  warning: InfoIcon,
+  arrow: ArrowrightIcon,
+  check: CheckboxIcon,
+  close: CloseIcon,
+} as const;
+
+type IconName = keyof typeof ICONS;
 
 function Icon({ name, className }: { name: IconName; className?: string }) {
-  const paths: Record<IconName, React.ReactNode> = {
-    beam: beamPaths,
-    source: (
-      <>
-        <rect x="3" y="7" width="18" height="12" rx="2" />
-        <path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" />
-        <path d="M7 12h10" />
-      </>
-    ),
-    destination: (
-      <>
-        <path d="M12 3v12" />
-        <path d="m7 10 5 5 5-5" />
-        <path d="M5 21h14" />
-      </>
-    ),
-    options: (
-      <>
-        <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
-        <path d="M1 14h6M9 8h6M17 16h6" />
-      </>
-    ),
-    link: (
-      <>
-        <path d="M9 17H7A5 5 0 0 1 7 7h2" />
-        <path d="M15 7h2a5 5 0 0 1 0 10h-2" />
-        <path d="M8 12h8" />
-      </>
-    ),
-    info: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 8h.01M11 12h1v4h1" />
-      </>
-    ),
-    warning: (
-      <>
-        <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-        <path d="M12 9v4M12 17h.01" />
-      </>
-    ),
-    arrow: (
-      <>
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
-      </>
-    ),
-    check: <path d="M20 6 9 17l-5-5" />,
-    close: (
-      <>
-        <path d="M18 6 6 18" />
-        <path d="m6 6 12 12" />
-      </>
-    ),
-  };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      {paths[name]}
-    </svg>
-  );
+  const Component = ICONS[name];
+  return <Component aria-hidden className={className} />;
 }
 
 function AuthenticationFields({
@@ -379,7 +337,7 @@ function SectionCard({
           <Icon name={icon} className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-quanta-space">{title}</h2>
+          <h2 className="text-base font-semibold text-quanta-denim">{title}</h2>
           <p className="mt-0.5 text-sm text-quanta-pigeon">{description}</p>
         </div>
       </header>
@@ -405,7 +363,7 @@ function operationType(
 }
 
 const STATUS_TAG: Record<string, string> = {
-  create: 'bg-green-100 text-green-700',
+  create: 'bg-quanta-mint text-quanta-turtle',
   reuse: 'bg-quanta-snow text-quanta-pigeon',
   replace: 'bg-quanta-ballet text-quanta-candy',
 };
@@ -449,7 +407,7 @@ function Callout({
   children: React.ReactNode;
 }) {
   const styles = {
-    info: 'bg-quanta-azure/10 text-quanta-space',
+    info: 'bg-quanta-azure/10 text-quanta-denim',
     warning: 'bg-quanta-ballet text-quanta-candy',
     neutral: 'bg-quanta-snow text-quanta-pigeon',
   }[tone];
@@ -486,7 +444,7 @@ function PlanReview({
       aria-live="polite"
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-quanta-smoke px-6 py-4">
-        <h2 className="text-base font-semibold text-quanta-space">
+        <h2 className="text-base font-semibold text-quanta-denim">
           {transferReport
             ? failed
               ? 'Transfer incomplete'
@@ -497,7 +455,7 @@ function PlanReview({
           <StatPill
             count={creates.length}
             label="create"
-            className="bg-green-100 text-green-700"
+            className="bg-quanta-mint text-quanta-turtle"
           />
           <StatPill
             count={replacements.length}
@@ -522,47 +480,45 @@ function PlanReview({
         </span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[32rem] border-collapse text-sm">
-          <thead>
-            <tr className="text-left text-[11px] tracking-wide text-quanta-pigeon uppercase">
-              <th className="px-6 py-2 font-semibold">Destination path</th>
-              <th className="px-3 py-2 font-semibold">Type</th>
-              <th className="px-6 py-2 font-semibold">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {plan.operations.map((operation) => {
-              const dependency = isDependency(plan, operation);
-              return (
-                <tr
-                  key={operation.destinationUrl}
-                  className={`border-t border-quanta-smoke ${
-                    operation.status === 'replace' ? 'bg-quanta-ballet/60' : ''
-                  }`}
-                >
-                  <td className="px-6 py-2.5">
-                    <span className="flex items-center gap-2 font-mono text-[13px] break-all text-quanta-space">
-                      {dependency && (
-                        <Icon
-                          name="link"
-                          className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
-                        />
-                      )}
-                      {operation.destinationUrl}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2.5 text-quanta-pigeon">
+      <div className="px-6 pt-4">
+        <Table aria-label="Transfer plan operations" className="max-h-none">
+          <TableHeader>
+            <Column isRowHeader defaultWidth="3fr" minWidth={240}>
+              Destination path
+            </Column>
+            <Column defaultWidth="1fr" minWidth={140}>
+              Type
+            </Column>
+            <Column defaultWidth={110} minWidth={110}>
+              Action
+            </Column>
+          </TableHeader>
+          <TableBody items={plan.operations}>
+            {(operation) => (
+              <Row id={operation.destinationUrl}>
+                <Cell>
+                  <span className="flex items-center gap-2 font-mono text-[13px] break-all text-quanta-denim">
+                    {isDependency(plan, operation) && (
+                      <Icon
+                        name="link"
+                        className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
+                      />
+                    )}
+                    {operation.destinationUrl}
+                  </span>
+                </Cell>
+                <Cell>
+                  <span className="text-quanta-iron">
                     {operationType(plan, operation)}
-                  </td>
-                  <td className="px-6 py-2.5">
-                    <StatusTag status={operation.status} />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </span>
+                </Cell>
+                <Cell>
+                  <StatusTag status={operation.status} />
+                </Cell>
+              </Row>
+            )}
+          </TableBody>
+        </Table>
       </div>
 
       <div className="flex flex-col gap-3 px-6 py-4">
@@ -582,18 +538,18 @@ function PlanReview({
           </Callout>
         )}
         {transferReport && !failed && (
-          <p className="text-sm font-medium text-quanta-space">
+          <p className="text-sm font-medium text-quanta-denim">
             Created {transferReport.created.length} item
             {transferReport.created.length === 1 ? '' : 's'} and replaced{' '}
             {transferReport.replaced.length} item
             {transferReport.replaced.length === 1 ? '' : 's'}. Final
             destination:{' '}
-            <a
+            <Link
               className="text-quanta-sapphire underline"
               href={transferReport.destinationUrl}
             >
               {transferReport.destinationUrl}
-            </a>
+            </Link>
           </p>
         )}
         {failed && transferReport && (
@@ -626,7 +582,7 @@ function ActivityEmpty({ hint }: { hint: string }) {
       <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-quanta-snow text-quanta-pigeon">
         <Icon name="beam" className="h-5 w-5" />
       </span>
-      <p className="text-sm font-medium text-quanta-space">No transfers yet</p>
+      <p className="text-sm font-medium text-quanta-denim">No transfers yet</p>
       <p className="mx-auto mt-1 max-w-sm text-sm text-quanta-pigeon">{hint}</p>
     </div>
   );
@@ -648,7 +604,7 @@ function JobCard({
           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
             tone === 'failed'
               ? 'bg-quanta-ballet text-quanta-candy'
-              : 'bg-green-100 text-green-700'
+              : 'bg-quanta-mint text-quanta-turtle'
           }`}
         >
           <Icon
@@ -657,7 +613,7 @@ function JobCard({
           />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold break-words text-quanta-space">
+          <p className="text-sm font-semibold break-words text-quanta-denim">
             {title}
           </p>
           {children}
@@ -677,7 +633,7 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
     if (result.ok === false) {
       return (
         <JobCard tone="failed" title="Transfer failed to start">
-          <p className="mt-1 text-sm text-quanta-space">
+          <p className="mt-1 text-sm text-quanta-denim">
             {result.error.message}
           </p>
           <p className="mt-1 text-xs text-quanta-pigeon">
@@ -704,12 +660,12 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
         <p className="mt-2 text-sm text-quanta-pigeon">
           Created {result.report.created.length}, replaced{' '}
           {result.report.replaced.length}, reused {result.report.reused.length}.{' '}
-          <a
+          <Link
             className="text-quanta-sapphire underline"
             href={result.report.destinationUrl}
           >
             Open destination
-          </a>
+          </Link>
         </p>
         {failed && (
           <p className="mt-2 text-xs text-quanta-candy">
@@ -732,6 +688,7 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
 }
 
 export default function MrScotty() {
+  const { t } = useTranslation();
   const { destinationUrl } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>() as ActionResult | undefined;
   const navigation = useNavigation();
@@ -755,235 +712,255 @@ export default function MrScotty() {
   }, [result]);
 
   return (
-    <Container as="main" width="layout" className="w-full px-6 py-12">
-      <header className="mb-6 flex items-start gap-4">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-quanta-sapphire to-[#0a5fa6] text-white shadow-sm">
-          <Icon name="beam" className="h-6 w-6" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-xs font-medium tracking-widest text-quanta-pigeon uppercase">
-            Site Setup · Content
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-quanta-space">
+    <main className="route-mr-scotty">
+      <Plug pluggable="toolbar-top" id="button-back">
+        <Link aria-label="back" href="/@@controlpanel">
+          <ArrowleftIcon />
+        </Link>
+      </Plug>
+      <Container
+        width="default"
+        className={`
+          route-controlpanel px-4 pt-6 pb-16
+          md:px-12 md:pt-12
+        `}
+      >
+        {/* The same header as the core control panels. */}
+        <header className="mb-8 flex flex-col gap-1">
+          <Link
+            href="/@@controlpanel"
+            className={`
+            self-start text-[13px] font-medium text-quanta-sapphire no-underline
+            hover:text-quanta-royal
+          `}
+          >
+            {t('cmsui.siteSetup')}
+          </Link>
+          <h1
+            className={`documentFirstHeading text-[28px] leading-[34px] font-bold text-quanta-denim`}
+          >
             Mr. Scotty
           </h1>
-          <p className="mt-1 max-w-2xl text-sm text-quanta-pigeon">
-            Beam content between any <code>plone.restapi</code> servers. Paths
-            and UUIDs are preserved, structure is recreated, and internal image
-            dependencies travel with their content.
+          <p className="text-sm text-quanta-iron">
+            {t('cmsui.controlpanelDescriptions.mr-scotty')}
           </p>
-        </div>
-      </header>
+        </header>
 
-      <RACTabs
-        selectedKey={tab}
-        onSelectionChange={(key) => setTab(key as 'new' | 'activity')}
-      >
-        <TabList
-          aria-label="Mr. Scotty"
-          className="mb-6 border-b border-quanta-smoke"
+        <Tabs
+          selectedKey={tab}
+          onSelectionChange={(key) => setTab(key as 'new' | 'activity')}
         >
-          <Tab id="new">New transfer</Tab>
-          <Tab id="activity">Activity</Tab>
-        </TabList>
+          <TabList aria-label="Mr. Scotty" className="mb-6">
+            <Tab id="new">New transfer</Tab>
+            <Tab id="activity">Activity</Tab>
+          </TabList>
 
-        <TabPanel id="new" shouldForceMount className="flex flex-col gap-6">
-          <Form id={FORM_ID} method="post" noValidate>
-            {policy === 'replace' && (
-              <input type="hidden" name="overwrite" value="true" />
-            )}
-            <div className="flex flex-col gap-6">
-              <SectionCard
-                icon="source"
-                title="Source"
-                description="The content object to read from."
-              >
-                <div className="flex flex-col gap-4">
-                  <TextField
-                    label="Source content URL"
-                    description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
-                    name="sourceUrl"
-                    type="url"
-                    placeholder="https://old.example/Plone/news/item"
-                    value={sourceUrlValue}
-                    onChange={setSourceUrlValue}
-                    isRequired
-                  />
-                  <AuthenticationFields
-                    prefix="source"
-                    defaultMode="anonymous"
-                  />
-                </div>
-              </SectionCard>
-
-              <SectionCard
-                icon="destination"
-                title="Destination"
-                description="The container content is beamed into."
-              >
-                <div className="flex flex-col gap-4">
-                  <TextField
-                    label="Destination container URL"
-                    description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
-                    name="destinationUrl"
-                    type="url"
-                    value={destinationUrlValue}
-                    onChange={setDestinationUrlValue}
-                    isRequired
-                  />
-                  <AuthenticationFields
-                    prefix="destination"
-                    defaultMode="session"
-                  />
-                  <div className="flex items-center gap-2 rounded-lg bg-quanta-snow px-3 py-2.5 text-xs text-quanta-pigeon">
-                    <span className="truncate font-mono text-quanta-space">
-                      {sourceUrlValue || 'source URL'}
-                    </span>
-                    <Icon name="arrow" className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate font-mono text-quanta-space">
-                      {(destinationUrlValue || 'destination').replace(
-                        /\/+$/,
-                        '',
-                      )}
-                      /…
-                    </span>
+          {/* Both panels stay mounted so the form keeps its state; React Aria
+              marks the hidden one inert and leaves hiding it to the styles. */}
+          <TabPanel
+            id="new"
+            shouldForceMount
+            className="flex flex-col gap-6 p-0 inert:hidden"
+          >
+            <Form id={FORM_ID} method="post" noValidate>
+              {policy === 'replace' && (
+                <input type="hidden" name="overwrite" value="true" />
+              )}
+              <div className="flex flex-col gap-6">
+                <SectionCard
+                  icon="source"
+                  title="Source"
+                  description="The content object to read from."
+                >
+                  <div className="flex flex-col gap-4">
+                    <TextField
+                      label="Source content URL"
+                      description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
+                      name="sourceUrl"
+                      type="url"
+                      placeholder="https://old.example/Plone/news/item"
+                      value={sourceUrlValue}
+                      onChange={setSourceUrlValue}
+                      isRequired
+                    />
+                    <AuthenticationFields
+                      prefix="source"
+                      defaultMode="anonymous"
+                    />
                   </div>
-                </div>
-              </SectionCard>
+                </SectionCard>
 
-              <SectionCard
-                icon="options"
-                title="Options"
-                description="How Mr. Scotty resolves a path that already exists."
-              >
-                <RadioGroup
-                  aria-label="Conflict policy"
-                  orientation="vertical"
-                  value={policy}
-                  onChange={(value) => setPolicy(value as ConflictPolicy)}
-                  isDisabled={busy}
-                  className="w-full"
+                <SectionCard
+                  icon="destination"
+                  title="Destination"
+                  description="The container content is beamed into."
                 >
-                  <Radio
-                    value="fail"
-                    className={({ isSelected }: { isSelected: boolean }) =>
-                      `w-full items-start rounded-lg border p-3 ${
-                        isSelected
-                          ? 'border-quanta-sapphire bg-quanta-azure/10'
-                          : 'border-quanta-smoke'
-                      }`
-                    }
-                  >
-                    <span className="flex flex-col">
-                      <span className="flex items-center gap-2 font-medium text-quanta-space">
-                        Fail
-                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-green-700 uppercase">
-                          safe
-                        </span>
+                  <div className="flex flex-col gap-4">
+                    <TextField
+                      label="Destination container URL"
+                      description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
+                      name="destinationUrl"
+                      type="url"
+                      value={destinationUrlValue}
+                      onChange={setDestinationUrlValue}
+                      isRequired
+                    />
+                    <AuthenticationFields
+                      prefix="destination"
+                      defaultMode="session"
+                    />
+                    <div className="flex items-center gap-2 rounded-lg bg-quanta-snow px-3 py-2.5 text-xs text-quanta-pigeon">
+                      <span className="truncate font-mono text-quanta-denim">
+                        {sourceUrlValue || 'source URL'}
                       </span>
-                      <span className="mt-0.5 text-xs text-quanta-pigeon">
-                        Abort before any write when the path or a UUID collides.
-                        The default.
+                      <Icon name="arrow" className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate font-mono text-quanta-denim">
+                        {(destinationUrlValue || 'destination').replace(
+                          /\/+$/,
+                          '',
+                        )}
+                        /…
                       </span>
-                    </span>
-                  </Radio>
-                  <Radio
-                    value="replace"
-                    className={({ isSelected }: { isSelected: boolean }) =>
-                      `w-full items-start rounded-lg border p-3 ${
-                        isSelected
-                          ? 'border-quanta-sapphire bg-quanta-azure/10'
-                          : 'border-quanta-smoke'
-                      }`
-                    }
-                  >
-                    <span className="flex flex-col">
-                      <span className="flex items-center gap-2 font-medium text-quanta-space">
-                        Replace existing content
-                        <span className="rounded bg-quanta-ballet px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-candy uppercase">
-                          destructive
-                        </span>
-                      </span>
-                      <span className="mt-0.5 text-xs text-quanta-pigeon">
-                        Delete the item at the source-relative path, then
-                        recreate it. Unrelated siblings and parents are
-                        preserved. Confirmed before it runs.
-                      </span>
-                    </span>
-                  </Radio>
-                </RadioGroup>
-              </SectionCard>
+                    </div>
+                  </div>
+                </SectionCard>
 
-              <div className="flex flex-wrap items-center gap-3">
-                <Button
-                  type="submit"
-                  name="intent"
-                  value="preflight"
-                  variant="neutral"
-                  isDisabled={busy}
+                <SectionCard
+                  icon="options"
+                  title="Options"
+                  description="How Mr. Scotty resolves a path that already exists."
                 >
-                  {busy ? 'Inspecting…' : 'Inspect transfer'}
-                </Button>
-                {policy === 'replace' ? (
-                  <Button
-                    type="button"
-                    variant="primary"
-                    accent
+                  <RadioGroup
+                    aria-label="Conflict policy"
+                    orientation="vertical"
+                    value={policy}
+                    onChange={(value) => setPolicy(value as ConflictPolicy)}
                     isDisabled={busy}
-                    onPress={() => setConfirmOpen(true)}
+                    className="w-full"
                   >
-                    {busy ? 'Working…' : 'Beam content'}
-                  </Button>
-                ) : (
+                    <Radio
+                      value="fail"
+                      className={({ isSelected }: { isSelected: boolean }) =>
+                        `w-full items-start rounded-lg border p-3 ${
+                          isSelected
+                            ? 'border-quanta-sapphire bg-quanta-azure/10'
+                            : 'border-quanta-smoke'
+                        }`
+                      }
+                    >
+                      <span className="flex flex-col">
+                        <span className="flex items-center gap-2 font-medium text-quanta-denim">
+                          Fail
+                          <span className="rounded bg-quanta-mint px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-turtle uppercase">
+                            safe
+                          </span>
+                        </span>
+                        <span className="mt-0.5 text-xs text-quanta-pigeon">
+                          Abort before any write when the path or a UUID
+                          collides. The default.
+                        </span>
+                      </span>
+                    </Radio>
+                    <Radio
+                      value="replace"
+                      className={({ isSelected }: { isSelected: boolean }) =>
+                        `w-full items-start rounded-lg border p-3 ${
+                          isSelected
+                            ? 'border-quanta-sapphire bg-quanta-azure/10'
+                            : 'border-quanta-smoke'
+                        }`
+                      }
+                    >
+                      <span className="flex flex-col">
+                        <span className="flex items-center gap-2 font-medium text-quanta-denim">
+                          Replace existing content
+                          <span className="rounded bg-quanta-ballet px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-candy uppercase">
+                            destructive
+                          </span>
+                        </span>
+                        <span className="mt-0.5 text-xs text-quanta-pigeon">
+                          Delete the item at the source-relative path, then
+                          recreate it. Unrelated siblings and parents are
+                          preserved. Confirmed before it runs.
+                        </span>
+                      </span>
+                    </Radio>
+                  </RadioGroup>
+                </SectionCard>
+
+                <div className="flex flex-wrap items-center gap-3">
                   <Button
                     type="submit"
                     name="intent"
-                    value="transfer"
-                    variant="primary"
-                    accent
+                    value="preflight"
+                    variant="neutral"
                     isDisabled={busy}
                   >
-                    {busy ? 'Working…' : 'Beam content'}
+                    {busy ? 'Inspecting…' : 'Inspect transfer'}
                   </Button>
-                )}
-                <span className="text-sm text-quanta-pigeon">
-                  Inspect is a dry run — nothing is written.
-                </span>
+                  {policy === 'replace' ? (
+                    <Button
+                      type="button"
+                      variant="primary"
+                      accent
+                      isDisabled={busy}
+                      onPress={() => setConfirmOpen(true)}
+                    >
+                      {busy ? 'Working…' : 'Beam content'}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="submit"
+                      name="intent"
+                      value="transfer"
+                      variant="primary"
+                      accent
+                      isDisabled={busy}
+                    >
+                      {busy ? 'Working…' : 'Beam content'}
+                    </Button>
+                  )}
+                  <span className="text-sm text-quanta-pigeon">
+                    Inspect is a dry run — nothing is written.
+                  </span>
+                </div>
               </div>
-            </div>
-          </Form>
+            </Form>
 
-          {result?.ok === false && (
-            <section
-              className="rounded-xl border border-quanta-candy bg-quanta-ballet p-5 text-sm text-quanta-space"
-              role="alert"
-            >
-              <p className="font-semibold">Transfer could not start</p>
-              <p className="mt-1">{result.error.message}</p>
-              <p className="mt-2 text-xs text-quanta-pigeon">
-                Error code: {result.error.code}
-              </p>
-            </section>
-          )}
-          {result?.ok === true && <PlanReview result={result} />}
-        </TabPanel>
+            {result?.ok === false && (
+              <section
+                className="rounded-xl border border-quanta-candy bg-quanta-ballet p-5 text-sm text-quanta-denim"
+                role="alert"
+              >
+                <p className="font-semibold">Transfer could not start</p>
+                <p className="mt-1">{result.error.message}</p>
+                <p className="mt-2 text-xs text-quanta-pigeon">
+                  Error code: {result.error.code}
+                </p>
+              </section>
+            )}
+            {result?.ok === true && <PlanReview result={result} />}
+          </TabPanel>
 
-        <TabPanel id="activity" shouldForceMount>
-          <ActivityPanel result={result} />
-        </TabPanel>
-      </RACTabs>
+          <TabPanel id="activity" shouldForceMount className="p-0 inert:hidden">
+            <ActivityPanel result={result} />
+          </TabPanel>
+        </Tabs>
 
-      <Modal isOpen={confirmOpen} onOpenChange={setConfirmOpen} isDismissable>
-        <Dialog className="max-w-md p-6 outline-none">
-          <h2 className="text-lg font-semibold text-quanta-space">
+        <ModalSheet
+          isOpen={confirmOpen}
+          onOpenChange={setConfirmOpen}
+          className="[--modal-max-width:400px]"
+        >
+          <Heading slot="title" className="mb-2 text-xl font-bold">
             Confirm replace
-          </h2>
-          <p className="mt-2 text-sm text-quanta-pigeon">
+          </Heading>
+          <p className="text-sm text-quanta-iron">
             This transfer deletes the existing content at the source-relative
             path and recreates it. Structural parents and unrelated siblings are
             left untouched.
           </p>
-          <div className="mt-5 flex justify-end gap-3">
+          <div className="mt-6 flex justify-end gap-2">
             <Button
               type="button"
               variant="neutral"
@@ -1003,8 +980,8 @@ export default function MrScotty() {
               Delete &amp; beam
             </Button>
           </div>
-        </Dialog>
-      </Modal>
-    </Container>
+        </ModalSheet>
+      </Container>
+    </main>
   );
 }
