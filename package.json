@@ -1,9 +1,9 @@
 {
   "name": "mr-scotty-dev",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "Mr.Scotty takes care of beaming up and down Plone content.",
   "author": "Victor Fernandez de Alba",
-  "homepage": "https://github.com/collective/mr-scotty",
+  "homepage": "https://github.com/sneridagh/mr-scotty",
   "license": "MIT",
   "keywords": [
     "volto-addon",

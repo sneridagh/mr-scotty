@@ -1,20 +1,42 @@
 {
   "name": "mr-scotty",
-  "version": "1.0.0",
-  "description": "Mr.Scotty takes care of beaming up and down Plone content.",
+  "version": "0.0.0",
+  "description": "Mr. Scotty beams content between Plone sites through plone.restapi, from a Plone Aurora control panel.",
   "main": "index.ts",
+  "files": [
+    "index.ts",
+    "types.d.ts",
+    "tsconfig.json",
+    "components",
+    "config",
+    "helpers",
+    "routes",
+    "server",
+    "styles",
+    "locales",
+    "public",
+    "README.md",
+    "CHANGELOG.md",
+    "!**/*.test.ts",
+    "!**/*.test.tsx"
+  ],
   "license": "MIT",
   "keywords": [
-    "volto-addon",
-    "volto",
+    "aurora-addon",
+    "aurora",
     "plone",
-    "react"
+    "plone-restapi",
+    "migration",
+    "content-transfer"
   ],
   "author": "Victor Fernandez de Alba",
-  "homepage": "https://github.com/collective/mr-scotty#readme",
+  "homepage": "https://github.com/sneridagh/mr-scotty#readme",
   "repository": {
     "type": "git",
-    "url": "git@github.com:collective/mr-scotty.git"
+    "url": "git+https://github.com/sneridagh/mr-scotty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sneridagh/mr-scotty/issues"
   },
   "publishConfig": {
     "access": "public"
