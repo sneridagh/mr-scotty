@@ -70,7 +70,13 @@ import {
 } from '../server/transfer.server';
 import BeamIcon from '../components/BeamIcon';
 import { describeToken } from '../helpers/token';
-import { isWithin, siteLabel, sitePath, splitPath } from '../helpers/paths';
+import {
+  isWithin,
+  publicUrl,
+  siteLabel,
+  sitePath,
+  splitPath,
+} from '../helpers/paths';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
 const CONFLICT_POLICIES: ReadonlyArray<{
@@ -544,10 +550,11 @@ function Place({
   suffix?: string;
 }) {
   return (
-    <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
+    // Inline, so a long path wraps with the text around it.
+    <span>
       <span className="text-quanta-iron">
         {siteLabel(rootUrl ?? url, thisSiteUrl)}
-      </span>
+      </span>{' '}
       <PathText
         path={
           suffix
@@ -829,7 +836,7 @@ function WorkflowWarnings({
       <span className="font-semibold">
         {plural(warnings.length, 'item')} kept a different workflow state.
       </span>
-      <ul className="mt-1 flex flex-col gap-1 text-xs">
+      <ul className="mt-1 flex flex-col gap-1 text-xs [overflow-wrap:anywhere]">
         {warnings.map((warning) => (
           <li key={warning.destinationUrl}>
             <span className="font-mono break-all">
@@ -1068,14 +1075,18 @@ function JobItem({
                 {reportSummary(report)}{' '}
                 <Link
                   className="text-quanta-sapphire underline"
-                  href={report.destinationUrl}
+                  href={publicUrl(report.destinationUrl, {
+                    thisSiteUrl,
+                    siteUrl: job.destinationSite?.siteUrl,
+                    frontendUrl: job.destinationSite?.frontendUrl,
+                  })}
                 >
                   Open destination
                 </Link>
               </p>
             )}
             {failed && (
-              <p className="mt-2 text-xs text-quanta-candy">
+              <p className="mt-2 text-xs [overflow-wrap:anywhere] text-quanta-candy">
                 Stopped at{' '}
                 <span className="font-mono break-all">
                   {sitePath(failed.destinationUrl, job.destinationRootUrl)}
@@ -1088,7 +1099,7 @@ function JobItem({
               </p>
             )}
             {job.error && (
-              <p className="mt-2 text-xs text-quanta-candy">
+              <p className="mt-2 text-xs [overflow-wrap:anywhere] text-quanta-candy">
                 {job.error.message} (error code: {job.error.code})
               </p>
             )}
@@ -1123,7 +1134,7 @@ function ActivityPanel({
             <p className="text-sm font-semibold text-quanta-denim">
               Transfer failed to start
             </p>
-            <p className="mt-1 text-sm text-quanta-denim">
+            <p className="mt-1 text-sm [overflow-wrap:anywhere] text-quanta-denim">
               {result.error.message}
             </p>
             <p className="mt-1 text-xs text-quanta-pigeon">
@@ -1527,7 +1538,9 @@ export default function MrScotty() {
                 role="alert"
               >
                 <p className="font-semibold">Transfer could not start</p>
-                <p className="mt-1">{result.error.message}</p>
+                <p className="mt-1 [overflow-wrap:anywhere]">
+                  {result.error.message}
+                </p>
                 <p className="mt-2 text-xs text-quanta-pigeon">
                   Error code: {result.error.code}
                 </p>

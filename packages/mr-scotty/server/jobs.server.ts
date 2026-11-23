@@ -1,6 +1,7 @@
 import {
   executeTransferPlan,
   TransferError,
+  type DestinationSite,
   type EndpointAuth,
   type TransferPlan,
   type TransferProgress,
@@ -25,6 +26,8 @@ export interface JobSnapshot {
   /** The sites the content is read from and written to. */
   sourceRootUrl?: string;
   destinationRootUrl?: string;
+  /** Where people see the destination site, for links. */
+  destinationSite?: DestinationSite;
   startedAt: string;
   finishedAt?: string;
   progress: TransferProgress;
@@ -114,6 +117,9 @@ export function startJob(
       destinationUrl: plan.destinationUrl,
       sourceRootUrl: plan.sourceRootUrl,
       destinationRootUrl: plan.destinationRootUrl,
+      ...(plan.destinationSite
+        ? { destinationSite: plan.destinationSite }
+        : {}),
       startedAt: new Date().toISOString(),
       progress: { done: 0, total: plan.operations.length },
     },

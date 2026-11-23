@@ -92,11 +92,24 @@ export interface TransferOperation {
   payload?: Record<string, unknown>;
 }
 
+export interface DestinationSite {
+  /** The Plone site root, such as `https://cms.example.org/Plone`. */
+  siteUrl: string;
+  /** The public frontend, such as `https://www.example.org`. */
+  frontendUrl?: string;
+}
+
 export interface TransferPlan {
   sourceUrl: string;
   sourceRootUrl: string;
   destinationUrl: string;
   destinationRootUrl: string;
+  /**
+   * Where people see the destination site: its frontend, when the backend
+   * names one, and the Plone site its paths are relative to. Used for links;
+   * nothing is written there.
+   */
+  destinationSite?: DestinationSite;
   sourceRelativePath: string;
   destinationPath: string;
   conflictPolicy: ConflictPolicy;
@@ -1051,6 +1064,58 @@ const DEFAULT_MAX_ITEMS = 500;
 const CHILDREN_PAGE_SIZE = 100;
 
 /** The item limit from `MR_SCOTTY_MAX_ITEMS`, or 500. */
+/**
+ * Where the destination site is shown to people, for links in reports. The
+ * Plone site root comes from `@site`; the frontend from plone.volto's
+ * `volto.frontend_domain` setting, which needs a Manager to read. Anything
+ * missing is left out, and links then point to the backend.
+ */
+async function readDestinationSite(
+  rootUrl: URL,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<DestinationSite> {
+  let siteUrl = rootUrl.toString();
+  try {
+    const site = await requestJson(
+      apiUrlAtRoot(rootUrl, rootUrl, '@site'),
+      auth,
+      fetchImpl,
+    );
+    if (typeof site['@id'] === 'string') {
+      siteUrl = rebaseApiUrl(
+        site['@id'].replace(/\/@site\/?$/, ''),
+        rootUrl,
+      ).toString();
+    }
+  } catch {
+    // Older backends have no @site: the navigation root will do.
+  }
+
+  let frontendUrl: string | undefined;
+  try {
+    const value: unknown = await requestJson(
+      apiUrlAtRoot(rootUrl, rootUrl, '@registry', 'volto.frontend_domain'),
+      auth,
+      fetchImpl,
+    );
+    const candidate = typeof value === 'string' ? new URL(value) : undefined;
+    if (
+      candidate &&
+      (candidate.protocol === 'http:' || candidate.protocol === 'https:') &&
+      // The setting defaults to http://localhost:3000. On a backend that is
+      // not local itself, that is the unset default, not its frontend.
+      (!isPrivateHost(candidate.hostname) || isPrivateHost(rootUrl.hostname))
+    ) {
+      frontendUrl = candidate.origin + candidate.pathname.replace(/\/+$/, '');
+    }
+  } catch {
+    // No plone.volto, or not allowed to read its settings.
+  }
+
+  return { siteUrl, ...(frontendUrl ? { frontendUrl } : {}) };
+}
+
 export function readMaxItemsFromEnv(
   env: Record<string, string | undefined> = currentEnv(),
 ): number {
@@ -1490,6 +1555,11 @@ export async function createTransferPlan(
     sourceRootUrl: source.rootUrl.toString(),
     destinationUrl: destinationUrl.toString(),
     destinationRootUrl: destination.rootUrl.toString(),
+    destinationSite: await readDestinationSite(
+      destination.rootUrl,
+      input.destinationAuth,
+      fetchImpl,
+    ),
     sourceRelativePath: `/${segments.join('/')}`,
     destinationPath: new URL(
       destinationBySourceUrl.get(

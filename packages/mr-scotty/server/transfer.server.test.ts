@@ -1262,6 +1262,53 @@ describe('tokens', () => {
   });
 });
 
+describe('destination site', () => {
+  function siteFetch(frontendDomain: unknown, registryStatus = 200) {
+    const inner = successfulFetch();
+    return vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      if (url.pathname.endsWith('/@site')) {
+        return json({ '@id': 'https://new.example/Plone/@site' });
+      }
+      if (url.pathname.endsWith('/@registry/volto.frontend_domain')) {
+        return json(frontendDomain, registryStatus);
+      }
+      return inner(resource, init);
+    }) as typeof fetch;
+  }
+
+  test('names the destination site and its frontend', async () => {
+    const plan = await createTransferPlan(
+      input,
+      siteFetch('https://www.new.example/'),
+    );
+    expect(plan.destinationSite).toEqual({
+      siteUrl: 'https://new.example/Plone',
+      frontendUrl: 'https://www.new.example',
+    });
+  });
+
+  test('ignores the default localhost frontend of a public backend', async () => {
+    const plan = await createTransferPlan(
+      input,
+      siteFetch('http://localhost:3000'),
+    );
+    expect(plan.destinationSite).toEqual({
+      siteUrl: 'https://new.example/Plone',
+    });
+  });
+
+  test('leaves the frontend out when it cannot be read', async () => {
+    const plan = await createTransferPlan(
+      input,
+      siteFetch({ type: 'Unauthorized' }, 401),
+    );
+    expect(plan.destinationSite).toEqual({
+      siteUrl: 'https://new.example/Plone',
+    });
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {
