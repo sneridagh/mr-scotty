@@ -3,9 +3,13 @@
 Mr.Scotty takes care of beaming up and down Plone content.
 
 [![npm](https://img.shields.io/npm/v/mr-scotty)](https://www.npmjs.com/package/mr-scotty)
-[![](https://img.shields.io/badge/-Storybook-ff4785?logo=Storybook&logoColor=white&style=flat-square)](https://collective.github.io/mr-scotty/)
-[![Code analysis checks](https://github.com/collective/mr-scotty/actions/workflows/code.yml/badge.svg)](https://github.com/collective/mr-scotty/actions/workflows/code.yml)
-[![Unit tests](https://github.com/collective/mr-scotty/actions/workflows/unit.yml/badge.svg)](https://github.com/collective/mr-scotty/actions/workflows/unit.yml)
+[![Code analysis checks](https://github.com/sneridagh/mr-scotty/actions/workflows/code.yml/badge.svg)](https://github.com/sneridagh/mr-scotty/actions/workflows/code.yml)
+[![Unit tests](https://github.com/sneridagh/mr-scotty/actions/workflows/unit.yml/badge.svg)](https://github.com/sneridagh/mr-scotty/actions/workflows/unit.yml)
+[![Acceptance tests](https://github.com/sneridagh/mr-scotty/actions/workflows/acceptance.yml/badge.svg)](https://github.com/sneridagh/mr-scotty/actions/workflows/acceptance.yml)
+
+Mr. Scotty is a [Plone Aurora](https://github.com/plone/aurora) control panel that beams content from one Plone site to another through `plone.restapi`.
+Pick a source item and a destination folder, inspect the transfer plan, and beam it.
+The transfer runs on the Aurora server, with live progress, and can be cancelled.
 
 ## Features
 
@@ -16,79 +20,56 @@ Mr.Scotty takes care of beaming up and down Plone content.
 - Preflight conflict detection and automatic structural parent creation.
 - Conflict policies for content that already exists: fail, skip, update in place, keep both under a new id, or replace.
 - Inline image/file fields and internal image-block dependencies are transferred with their content.
+- Transfers run as background jobs with live progress in the Activity tab, and can be cancelled.
+- Anonymous, bearer token, or username and password connections. Bearer tokens work for people who log in through Google, GitHub or another provider, and are renewed during long transfers.
 
 See the [architecture and current transfer contract](docs/architecture.md).
 
+## Requirements
+
+- A Plone Aurora project.
+- Plone 6 backends with `plone.restapi`, for the source and the destination.
+- A user with the Manager role on the Aurora site: the control panel is only open to Managers.
+
 ## Installation
 
-To install your project, you must choose the method appropriate to your version of Volto.
+Add `mr-scotty` to your Aurora project's dependencies:
 
-
-### Volto 17 and earlier
-
-Create a new Volto project (you can skip this step if you already have one):
-
-```
-npm install -g yo @plone/generator-volto
-yo @plone/volto my-volto-project --addon mr-scotty
-cd my-volto-project
+```shell
+pnpm add mr-scotty
 ```
 
-Add `mr-scotty` to your package.json:
+Register it in your project's `registry.config.ts`:
 
-```JSON
-"addons": [
-    "mr-scotty"
-],
+```ts
+import { addons } from '@plone/aurora/registry.config';
 
-"dependencies": {
-    "mr-scotty": "*"
-}
+addons.push('mr-scotty');
+
+export { addons };
 ```
 
-Download and install the new add-on by running:
+Restart Aurora.
+Mr. Scotty appears in Site Setup, in the Content group, and opens at `/@@controlpanel/mr-scotty`.
 
-```
-yarn install
-```
+## Configuration
 
-Start volto with:
+Mr. Scotty reads these environment variables on the Aurora server.
+All are optional.
 
-```
-yarn start
-```
+- `MR_SCOTTY_ALLOWED_HOSTS`: a comma-separated list of the only hosts Mr. Scotty may read from or write to.
+- `MR_SCOTTY_BLOCK_PRIVATE_NETWORK`: when set to a true value, Mr. Scotty refuses loopback, private and link-local hosts.
+- `MR_SCOTTY_MAX_ITEMS`: the most items one transfer may include. The default is 500.
 
-### Volto 18 and later
+On a public deployment, set `MR_SCOTTY_ALLOWED_HOSTS` or `MR_SCOTTY_BLOCK_PRIVATE_NETWORK`, so the server can't be used to reach internal hosts.
+See the [security notes](docs/architecture.md#security).
 
-Add `mr-scotty` to your `package.json`:
-
-```json
-"dependencies": {
-    "mr-scotty": "*"
-}
-```
-
-Add `mr-scotty` to your `volto.config.js`:
-
-```javascript
-const addons = ['mr-scotty'];
-```
-
-If this package provides a Volto theme, and you want to activate it, then add the following to your `volto.config.js`:
-
-```javascript
-const theme = 'mr-scotty';
-```
-
-## Test installation
-
-Visit http://localhost:3000/ in a browser, login, and check the awesome new features.
-
+Transfer jobs are kept in the memory of the Aurora server process.
+A restart loses running jobs and the Activity history, and with several server processes, each one only shows its own jobs.
 
 ## Development
 
-The development of this add-on is done in isolation using a new approach using pnpm workspaces and latest `mrs-developer` and other Volto core improvements.
-For this reason, it only works with pnpm and Volto 18 (currently in alpha).
+The add-on is developed in isolation, in a pnpm workspace that checks out Plone Aurora with `mrs-developer`.
 
 
 ### Pre-requisites
@@ -189,7 +170,7 @@ Run unit tests.
 make test
 ```
 
-### Run Cypress tests
+### Run acceptance tests
 
 Run each of these steps in separate terminal sessions.
 
