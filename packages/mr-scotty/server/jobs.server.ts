@@ -5,6 +5,7 @@ import {
   type EndpointAuth,
   type TransferPlan,
   type TransferProgress,
+  type TypeIssue,
   type TransferReport,
 } from './transfer.server';
 
@@ -28,6 +29,8 @@ export interface JobSnapshot {
   destinationRootUrl?: string;
   /** Where people see the destination site, for links. */
   destinationSite?: DestinationSite;
+  /** Source types beamed as other types, or skipped. */
+  typeIssues?: TypeIssue[];
   startedAt: string;
   finishedAt?: string;
   progress: TransferProgress;
@@ -120,6 +123,7 @@ export function startJob(
       ...(plan.destinationSite
         ? { destinationSite: plan.destinationSite }
         : {}),
+      ...(plan.typeIssues?.length ? { typeIssues: plan.typeIssues } : {}),
       startedAt: new Date().toISOString(),
       progress: { done: 0, total: plan.operations.length },
     },

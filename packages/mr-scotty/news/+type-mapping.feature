@@ -1,0 +1,1 @@
+Inspecting a transfer now flags content types the destination does not have, instead of failing halfway through. For each one, choose a destination type to beam its items as, or skip them; the plan shows the mapping and the fields the chosen type would drop, and Activity reports it. @sneridagh

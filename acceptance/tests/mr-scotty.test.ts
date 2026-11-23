@@ -555,6 +555,69 @@ test.describe('Mr. Scotty', () => {
     ]);
   });
 
+  test('beams a type the destination lacks as another type', async ({
+    page,
+  }) => {
+    const sourceApiURL = getDefaultSourceApiURL();
+    const destinationApiURL = getDefaultApiURL();
+    // A type that only the source has.
+    const created = await page.request.post(
+      apiContentURL(sourceApiURL, '@controlpanels/dexterity-types'),
+      {
+        headers: { Accept: 'application/json', ...basicAuth('admin', 'secret') },
+        data: { title: `Story ${Date.now()}` },
+      },
+    );
+    expect(created.ok()).toBeTruthy();
+    const typeId = String(
+      ((await created.json()) as { '@id': string })['@id'].split('/').at(-1),
+    );
+    const id = `mr-scotty-story-${Date.now()}`;
+    await createContent(
+      page,
+      {
+        contentType: typeId,
+        contentId: id,
+        contentTitle: 'A story',
+        transition: 'publish',
+      },
+      { apiURL: sourceApiURL, username: 'admin', password: 'secret' },
+    );
+
+    const { token } = await login(page);
+    await page.goto('/mr-scotty');
+    await waitForMrScottyHydration(page);
+    await typeSourceUrl(page, `${sourceApiURL}/${id}`);
+    await page.getByRole('button', { name: 'Inspect transfer' }).click();
+
+    // The plan flags the type, and nothing can be beamed yet.
+    await expect(
+      page.getByText("1 content type doesn't exist on the destination"),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Beam content' }),
+    ).toBeDisabled();
+
+    await page.getByRole('button', { name: new RegExp(`Beam ${typeId} as`) }).click();
+    await page.getByRole('option', { name: 'Beam as News Item' }).click();
+    await expect(page.getByText('Content types beamed as other types')).toBeVisible();
+    await expect(page.getByRole('gridcell', { name: /mapped/ })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Beam 1 item' }).click();
+    await expectBeamed(page, `/${id}`);
+    await expect(
+      transferEntry(page, `/${id}`).getByText(`${typeId} beamed as News Item`),
+    ).toBeVisible();
+
+    const beamed = await getJson(
+      page,
+      apiContentURL(destinationApiURL, id),
+      bearerAuth(token),
+    );
+    expect(beamed['@type']).toBe('News Item');
+    expect(beamed.title).toBe('A story');
+  });
+
   test.describe('conflict policies', () => {
     /**
      * A published source document and an unrelated destination document at

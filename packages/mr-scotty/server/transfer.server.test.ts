@@ -1309,6 +1309,111 @@ describe('destination site', () => {
   });
 });
 
+describe('content types', () => {
+  /** A destination with these types; `News Item` lacks the block fields. */
+  function typesFetch(types: string[]) {
+    const inner = successfulFetch();
+    return vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      if (url.origin === 'https://new.example') {
+        if (url.pathname.endsWith('/@types')) {
+          return json(
+            types.map((type) => ({
+              '@id': `https://new.example/Plone/@types/${encodeURIComponent(type)}`,
+              title: type,
+            })),
+          );
+        }
+        if (url.pathname.endsWith('/@types/News%20Item')) {
+          return json({
+            properties: { title: {}, description: {}, effective: {} },
+          });
+        }
+      }
+      return inner(resource, init);
+    });
+  }
+
+  test('flags a type the destination lacks, and refuses to beam it', async () => {
+    const fetchImpl = typesFetch(['Folder', 'News Item']);
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+
+    expect(plan.typeIssues).toEqual([{ sourceType: 'Document', count: 1 }]);
+    expect(plan.destinationTypes?.map((type) => type.id)).toEqual([
+      'Folder',
+      'News Item',
+    ]);
+    expect(plan.operations.at(-1)).toMatchObject({
+      type: 'Document',
+      missingType: true,
+    });
+    await expect(
+      executeTransferPlan(
+        plan,
+        input.destinationAuth,
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'missing_types' });
+    expect(
+      fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST'),
+    ).toBe(false);
+  });
+
+  test('beams a missing type as the chosen one, and names dropped fields', async () => {
+    const fetchImpl = typesFetch(['Folder', 'News Item']);
+    const plan = await createTransferPlan(
+      { ...input, typeMap: { Document: 'News Item' } },
+      fetchImpl as typeof fetch,
+    );
+
+    const launchOperation = plan.operations.at(-1);
+    expect(launchOperation).toMatchObject({
+      type: 'News Item',
+      sourceType: 'Document',
+      payload: { '@type': 'News Item' },
+    });
+    expect(launchOperation?.missingType).toBeUndefined();
+    expect(plan.typeIssues).toEqual([
+      {
+        sourceType: 'Document',
+        count: 1,
+        mappedTo: 'News Item',
+        droppedFields: ['blocks', 'blocks_layout'],
+      },
+    ]);
+  });
+
+  test('skips the items of a type, without checking their paths', async () => {
+    const fetchImpl = typesFetch(['Folder']);
+    const plan = await createTransferPlan(
+      { ...input, typeMap: { Document: null } },
+      fetchImpl as typeof fetch,
+    );
+
+    expect(plan.operations.at(-1)).toMatchObject({
+      status: 'skip',
+      skipReason: 'type',
+    });
+    expect(plan.typeIssues).toEqual([
+      { sourceType: 'Document', count: 1, mappedTo: null },
+    ]);
+    const checked = fetchImpl.mock.calls.map(([resource]) => String(resource));
+    expect(checked.some((url) => url.endsWith('/archive/news/launch'))).toBe(
+      false,
+    );
+  });
+
+  test('refuses a mapping to a type the destination lacks', async () => {
+    const fetchImpl = typesFetch(['Folder']);
+    await expect(
+      createTransferPlan(
+        { ...input, typeMap: { Document: 'Post' } },
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_type_mapping' });
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {

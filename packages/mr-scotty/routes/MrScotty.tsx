@@ -53,12 +53,14 @@ import {
   useFetcher,
   useLoaderData,
   useNavigation,
+  useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from 'react-router';
 
 const FORM_ID = 'mr-scotty-transfer';
 import {
+  assertTypesResolved,
   createTransferPlan,
   readMaxItemsFromEnv,
   TransferError,
@@ -136,7 +138,28 @@ type SubmittedForm = {
   destinationUrl: string;
   conflictPolicy: ConflictPolicy;
   includeChildren: boolean;
+  typeMap: TypeMap;
 };
+
+/** Source type → destination type, or `null` to skip its items. */
+type TypeMap = Record<string, string | null>;
+
+/** The form field that carries the choice for one source type. */
+const TYPE_MAP_PREFIX = 'typeMap:';
+/** The value that skips a type's items. */
+const SKIP_TYPE = '__skip__';
+
+function readTypeMap(formData: FormData): TypeMap {
+  const typeMap: TypeMap = {};
+  for (const [name, value] of formData.entries()) {
+    if (!name.startsWith(TYPE_MAP_PREFIX) || typeof value !== 'string')
+      continue;
+    const sourceType = name.slice(TYPE_MAP_PREFIX.length);
+    if (!sourceType || !value) continue;
+    typeMap[sourceType] = value === SKIP_TYPE ? null : value;
+  }
+  return typeMap;
+}
 
 type ActionResult =
   | { ok: true; intent: 'preflight'; plan: TransferPlan; form: SubmittedForm }
@@ -262,6 +285,7 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
     const includeChildren = formData.get('includeChildren') === 'true';
+    const typeMap = readTypeMap(formData);
     const input = {
       sourceUrl,
       destinationUrl,
@@ -269,12 +293,20 @@ export async function action({ request }: ActionFunctionArgs) {
       destinationAuth,
       conflictPolicy,
       includeChildren,
+      typeMap,
     };
-    const form = { sourceUrl, destinationUrl, conflictPolicy, includeChildren };
+    const form = {
+      sourceUrl,
+      destinationUrl,
+      conflictPolicy,
+      includeChildren,
+      typeMap,
+    };
     const intent = String(formData.get('intent') || 'preflight');
     const plan = await createTransferPlan(input);
 
     if (intent === 'transfer') {
+      assertTypesResolved(plan);
       // The plan is checked here; the writing runs in the background and
       // streams its progress to the Activity tab.
       const job = startJob(plan, destinationAuth);
@@ -443,7 +475,13 @@ function isDependency(
   plan: TransferPlan,
   operation: TransferPlan['operations'][number],
 ): boolean {
-  return operation.kind === 'content' && operation.sourceUrl !== plan.sourceUrl;
+  // Items inside the selected folder have a place in it; referenced images,
+  // picked up from the content that uses them, do not.
+  return (
+    operation.kind === 'content' &&
+    operation.sourceUrl !== plan.sourceUrl &&
+    operation.position === undefined
+  );
 }
 
 const STATUS_TAG: Record<TransferOperation['status'], string> = {
@@ -640,7 +678,11 @@ function PlanTableView({ plan }: { plan: TransferPlan }) {
               <PlanRow
                 id={operation.destinationUrl}
                 className={`border-t border-quanta-smoke outline-none ${
-                  operation.status === 'replace' ? 'bg-quanta-ballet/50' : ''
+                  operation.missingType
+                    ? 'bg-quanta-cream/60'
+                    : operation.status === 'replace'
+                      ? 'bg-quanta-ballet/50'
+                      : ''
                 }`}
               >
                 <PlanCell className={PLAN_CELL}>
@@ -670,9 +712,36 @@ function PlanTableView({ plan }: { plan: TransferPlan }) {
                 <PlanCell className={PLAN_CELL}>
                   <span className="flex flex-col gap-0.5 text-quanta-iron">
                     <span className="flex flex-wrap items-center gap-1.5">
-                      {operation.kind === 'placeholder'
-                        ? 'Document'
-                        : operation.type}
+                      {operation.sourceType && (
+                        <>
+                          <span className="text-quanta-pigeon line-through">
+                            {operation.sourceType}
+                          </span>
+                          <span aria-hidden>→</span>
+                          <span className="sr-only">beamed as</span>
+                        </>
+                      )}
+                      <span
+                        className={
+                          operation.missingType
+                            ? 'font-medium text-quanta-bronze'
+                            : undefined
+                        }
+                      >
+                        {operation.kind === 'placeholder'
+                          ? 'Document'
+                          : operation.type}
+                      </span>
+                      {operation.missingType && (
+                        <RowTag>not on destination</RowTag>
+                      )}
+                      {operation.sourceType && <RowTag>mapped</RowTag>}
+                      {operation.skipReason === 'type' && (
+                        <RowTag>type skipped</RowTag>
+                      )}
+                      {operation.skipReason === 'parent' && (
+                        <RowTag>inside a skipped item</RowTag>
+                      )}
                       {operation.kind === 'placeholder' && (
                         <RowTag>structural</RowTag>
                       )}
@@ -698,14 +767,117 @@ function PlanTableView({ plan }: { plan: TransferPlan }) {
   );
 }
 
+/**
+ * Types the destination lacks, each with a choice: beam its items as one of
+ * the destination's types, or skip them. Choosing inspects again.
+ */
+function TypeIssuesPanel({
+  plan,
+  disabled,
+  onChoose,
+}: {
+  plan: TransferPlan;
+  disabled: boolean;
+  onChoose: (sourceType: string, choice: string) => void;
+}) {
+  const issues = plan.typeIssues ?? [];
+  const unresolved = issues.filter((issue) => issue.mappedTo === undefined);
+  const insideSkipped = plan.operations.filter(
+    (operation) => operation.skipReason === 'parent',
+  ).length;
+  return (
+    <div
+      className={`rounded-lg border p-4 ${
+        unresolved.length > 0
+          ? 'border-quanta-bronze/40 bg-quanta-cream/60'
+          : 'border-quanta-smoke bg-quanta-snow'
+      }`}
+    >
+      <p className="flex items-center gap-2 text-sm font-semibold text-quanta-denim">
+        <Icon name="warning" className="h-4 w-4 shrink-0 text-quanta-bronze" />
+        {unresolved.length > 0
+          ? `${plural(unresolved.length, 'content type')} ${
+              unresolved.length === 1 ? "doesn't" : "don't"
+            } exist on the destination`
+          : 'Content types beamed as other types'}
+      </p>
+      <p className="mt-1 text-xs text-quanta-pigeon">
+        Choose a destination type for each, or skip their items. Nothing is
+        beamed until every type has a choice.
+      </p>
+      <ul className="mt-3 flex flex-col gap-3">
+        {issues.map((issue) => (
+          <li
+            key={issue.sourceType}
+            className="grid items-start gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]"
+          >
+            <div className="pt-2 text-sm">
+              <span className="font-mono font-semibold text-quanta-denim">
+                {issue.sourceType}
+              </span>{' '}
+              <span className="text-quanta-pigeon">
+                · {plural(issue.count, 'item')}
+              </span>
+              {issue.droppedFields && issue.droppedFields.length > 0 && (
+                <p className="mt-1 text-xs text-quanta-bronze">
+                  {issue.mappedTo} has no field for{' '}
+                  {issue.droppedFields.join(', ')}:{' '}
+                  {issue.droppedFields.length === 1
+                    ? 'it is dropped.'
+                    : 'they are dropped.'}
+                </p>
+              )}
+              {issue.mappedTo === null && insideSkipped > 0 && (
+                <p className="mt-1 text-xs text-quanta-pigeon">
+                  Everything inside skipped items is skipped too.
+                </p>
+              )}
+            </div>
+            <Select
+              aria-label={`Beam ${issue.sourceType} as`}
+              placeholder="Choose a type"
+              selectedKey={
+                issue.mappedTo === undefined
+                  ? null
+                  : issue.mappedTo === null
+                    ? SKIP_TYPE
+                    : issue.mappedTo
+              }
+              onSelectionChange={(key) =>
+                key !== null && onChoose(issue.sourceType, String(key))
+              }
+              isDisabled={disabled}
+            >
+              {[
+                ...(plan.destinationTypes ?? []).map((type) => (
+                  <SelectItem key={type.id} id={type.id}>
+                    {`Beam as ${type.title}`}
+                  </SelectItem>
+                )),
+                <SelectItem key={SKIP_TYPE} id={SKIP_TYPE}>
+                  Skip these items
+                </SelectItem>,
+              ]}
+            </Select>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function PlanReview({
   result,
   beamButton,
   onEdit,
+  onChooseType,
+  busy,
 }: {
   result: PlanResult;
   beamButton: React.ReactNode;
   onEdit: () => void;
+  onChooseType: (sourceType: string, choice: string) => void;
+  busy: boolean;
 }) {
   const { plan } = result;
   const countOf = (status: TransferOperation['status']) =>
@@ -761,7 +933,14 @@ function PlanReview({
         </span>
       </div>
 
-      <div className="px-6 pt-4">
+      <div className="flex flex-col gap-4 px-6 pt-4">
+        {plan.typeIssues && plan.typeIssues.length > 0 && !started && (
+          <TypeIssuesPanel
+            plan={plan}
+            disabled={busy}
+            onChoose={onChooseType}
+          />
+        )}
         <PlanTableView plan={plan} />
       </div>
 
@@ -1041,6 +1220,17 @@ function JobItem({
           )}
         </p>
         {route}
+        {job.typeIssues && job.typeIssues.length > 0 && (
+          <p className="mt-1 text-xs text-quanta-pigeon">
+            {job.typeIssues
+              .map((issue) =>
+                issue.mappedTo === null
+                  ? `${issue.sourceType} skipped`
+                  : `${issue.sourceType} beamed as ${issue.mappedTo}`,
+              )
+              .join(' · ')}
+          </p>
+        )}
 
         {job.status === 'running' ? (
           <>
@@ -1245,11 +1435,14 @@ function BeamButton({
   busy,
   label,
   onConfirm,
+  blocked = false,
 }: {
   policy: ConflictPolicy;
   busy: boolean;
   label: string;
   onConfirm: () => void;
+  /** Set while the plan cannot be beamed yet. */
+  blocked?: boolean;
 }) {
   // Replace is confirmed in a dialog, whose button submits the form.
   return policy === 'replace' ? (
@@ -1257,7 +1450,7 @@ function BeamButton({
       type="button"
       variant="primary"
       accent
-      isDisabled={busy}
+      isDisabled={busy || blocked}
       onPress={onConfirm}
     >
       {busy ? 'Working…' : label}
@@ -1270,7 +1463,7 @@ function BeamButton({
       value="transfer"
       variant="primary"
       accent
-      isDisabled={busy}
+      isDisabled={busy || blocked}
     >
       {busy ? 'Working…' : label}
     </Button>
@@ -1297,6 +1490,10 @@ export default function MrScotty() {
   const [tab, setTab] = useState<'new' | 'activity'>('new');
   const [policy, setPolicy] = useState<ConflictPolicy>('fail');
   const [includeChildren, setIncludeChildren] = useState(false);
+  const [typeMap, setTypeMap] = useState<TypeMap>(
+    hasPlan(result) ? result.form.typeMap : {},
+  );
+  const submit = useSubmit();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sourceUrlValue, setSourceUrlValue] = useState(
     hasPlan(result) ? result.form.sourceUrl : '',
@@ -1309,6 +1506,7 @@ export default function MrScotty() {
     if (!hasPlan(result)) return;
     setPolicy(result.form.conflictPolicy);
     setIncludeChildren(result.form.includeChildren);
+    setTypeMap(result.form.typeMap);
     setSourceUrlValue(result.form.sourceUrl);
     setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
@@ -1324,6 +1522,26 @@ export default function MrScotty() {
       ? result.plan
       : undefined;
   // Only a plan inspected with Replace knows what Replace deletes.
+  // A type the destination lacks with no choice yet blocks beaming.
+  const unresolvedTypes = Boolean(
+    hasPlan(result) &&
+    result.plan.typeIssues?.some((issue) => issue.mappedTo === undefined),
+  );
+
+  /** Records a choice for a missing type, and inspects again with it. */
+  const chooseType = (sourceType: string, choice: string) => {
+    setTypeMap((current) => ({
+      ...current,
+      [sourceType]: choice === SKIP_TYPE ? null : choice,
+    }));
+    const form = document.getElementById(FORM_ID);
+    if (!(form instanceof HTMLFormElement)) return;
+    const formData = new FormData(form);
+    formData.set(`${TYPE_MAP_PREFIX}${sourceType}`, choice);
+    formData.set('intent', 'preflight');
+    void submit(formData, { method: 'post' });
+  };
+
   const toReplace =
     currentPlan?.conflictPolicy === 'replace'
       ? currentPlan.operations.filter(
@@ -1402,6 +1620,14 @@ export default function MrScotty() {
               {includeChildren && (
                 <input type="hidden" name="includeChildren" value="true" />
               )}
+              {Object.entries(typeMap).map(([sourceType, target]) => (
+                <input
+                  key={sourceType}
+                  type="hidden"
+                  name={`${TYPE_MAP_PREFIX}${sourceType}`}
+                  value={target ?? SKIP_TYPE}
+                />
+              ))}
               <div ref={formTop} className="flex scroll-mt-6 flex-col gap-6">
                 <SectionCard
                   icon="source"
@@ -1522,6 +1748,7 @@ export default function MrScotty() {
                   <BeamButton
                     policy={policy}
                     busy={busy}
+                    blocked={unresolvedTypes}
                     label="Beam content"
                     onConfirm={() => setConfirmOpen(true)}
                   />
@@ -1553,6 +1780,7 @@ export default function MrScotty() {
                   <BeamButton
                     policy={policy}
                     busy={busy}
+                    blocked={unresolvedTypes}
                     label={`Beam ${plural(
                       result.plan.operations.filter(
                         (operation) =>
@@ -1564,6 +1792,8 @@ export default function MrScotty() {
                     onConfirm={() => setConfirmOpen(true)}
                   />
                 }
+                busy={busy}
+                onChooseType={chooseType}
                 onEdit={() =>
                   formTop.current?.scrollIntoView({
                     behavior: 'smooth',
