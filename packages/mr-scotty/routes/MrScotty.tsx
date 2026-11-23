@@ -10,6 +10,7 @@ import {
   Heading,
   Link,
   ModalSheet,
+  ProgressBar,
   Radio,
   RadioGroup,
   Row,
@@ -36,11 +37,18 @@ import {
   WorldIcon,
 } from '@plone/icons';
 import { Plug } from '@plone/layout/components/Pluggable';
-import { requireAuthCookie } from '@plone/react-router';
+import { requireManager } from '../server/auth.server';
+import {
+  cancelJob,
+  listJobs,
+  startJob,
+  type JobSnapshot,
+} from '../server/jobs.server';
 import {
   Form,
   data,
   useActionData,
+  useFetcher,
   useLoaderData,
   useNavigation,
   type ActionFunctionArgs,
@@ -50,7 +58,6 @@ import {
 const FORM_ID = 'mr-scotty-transfer';
 import {
   createTransferPlan,
-  executeTransferPlan,
   readMaxItemsFromEnv,
   TransferError,
   type ConflictPolicy,
@@ -127,41 +134,18 @@ type ActionResult =
       ok: true;
       intent: 'transfer';
       plan: TransferPlan;
-      report: TransferReport;
+      job: JobSnapshot;
       form: SubmittedForm;
     }
+  | { ok: true; intent: 'cancel'; cancelled: boolean }
   | { ok: false; error: { code: string; message: string } };
-
-/**
- * Mr. Scotty can read from and write to arbitrary servers, so it is gated on
- * the Manager role rather than mere authentication. The Manager-only
- * `@controlpanels` endpoint is used as the role probe against this site's
- * configured backend.
- */
-async function requireManager(request: Request): Promise<string> {
-  const token = await requireAuthCookie(request);
-  const apiPath = String(config.settings.apiPath).replace(/\/+$/, '');
-  const response = await fetch(`${apiPath}/@controlpanels`, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    redirect: 'manual',
-  });
-  if (!response.ok) {
-    throw new Response('Mr. Scotty requires the Manager role.', {
-      status: 403,
-      statusText: 'Forbidden',
-    });
-  }
-  return token;
-}
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireManager(request);
   return {
     destinationUrl: config.settings.apiPath,
     maxItems: readMaxItemsFromEnv(),
+    jobs: listJobs(),
   };
 }
 
@@ -242,6 +226,14 @@ export async function action({ request }: ActionFunctionArgs) {
   const sessionToken = await requireManager(request);
   const formData = await request.formData();
 
+  if (formData.get('intent') === 'cancel') {
+    return data({
+      ok: true,
+      intent: 'cancel',
+      cancelled: cancelJob(String(formData.get('jobId') || '')),
+    } satisfies ActionResult);
+  }
+
   try {
     assertSessionDestination(formData);
     const destinationAuth = endpointAuth(formData, 'destination', sessionToken);
@@ -273,12 +265,14 @@ export async function action({ request }: ActionFunctionArgs) {
     const plan = await createTransferPlan(input);
 
     if (intent === 'transfer') {
-      const report = await executeTransferPlan(plan, destinationAuth);
+      // The plan is checked here; the writing runs in the background and
+      // streams its progress to the Activity tab.
+      const job = startJob(plan, destinationAuth);
       return data({
         ok: true,
         intent,
         plan,
-        report,
+        job,
         form,
       } satisfies ActionResult);
     }
@@ -530,11 +524,13 @@ function Callout({
   );
 }
 
-function PlanReview({
-  result,
-}: {
-  result: Extract<ActionResult, { ok: true }>;
-}) {
+type PlanResult = Extract<ActionResult, { plan: TransferPlan }>;
+
+function hasPlan(result: ActionResult | undefined): result is PlanResult {
+  return result?.ok === true && 'plan' in result;
+}
+
+function PlanReview({ result }: { result: PlanResult }) {
   const { plan } = result;
   const countOf = (status: TransferOperation['status']) =>
     plan.operations.filter((o) => o.status === status).length;
@@ -542,9 +538,8 @@ function PlanReview({
   const updates = countOf('update');
   const renames = countOf('rename');
   const dependencies = plan.operations.filter((o) => isDependency(plan, o));
-  const transferReport =
-    result.intent === 'transfer' ? result.report : undefined;
-  const failed = transferReport?.failed;
+  // Once beaming starts, its progress and report are on the Activity tab.
+  const started = result.intent === 'transfer';
 
   return (
     <section
@@ -553,11 +548,7 @@ function PlanReview({
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-quanta-smoke px-6 py-4">
         <h2 className="text-base font-semibold text-quanta-denim">
-          {transferReport
-            ? failed
-              ? 'Transfer incomplete'
-              : 'Transfer complete'
-            : 'Transfer plan'}
+          Transfer plan
         </h2>
         <div className="flex flex-wrap gap-2">
           {STATUS_ORDER.filter(
@@ -647,21 +638,21 @@ function PlanReview({
             the block URLs are rewritten to the destination.
           </Callout>
         )}
-        {updates > 0 && !transferReport && (
+        {updates > 0 && !started && (
           <Callout tone="info">
             <b className="font-semibold">Update</b> writes the source fields
             into {plural(updates, 'existing item')}. Their UUIDs and history are
             kept, so earlier versions can be restored.
           </Callout>
         )}
-        {renames > 0 && !transferReport && (
+        {renames > 0 && !started && (
           <Callout tone="info">
             {plural(renames, 'item')} {renames === 1 ? 'is' : 'are'} beamed
             under a new id because{' '}
             {renames === 1 ? 'its path is' : 'their paths are'} taken.
           </Callout>
         )}
-        {!transferReport &&
+        {!started &&
           plan.operations.some((operation) => operation.reviewState) && (
             <Callout tone="neutral">
               Written items are moved to their source workflow state, shown
@@ -669,43 +660,16 @@ function PlanReview({
               destination: the REST API does not accept them.
             </Callout>
           )}
-        {transferReport && transferReport.warnings.length > 0 && (
-          <WorkflowWarnings warnings={transferReport.warnings} />
-        )}
-        {replacements > 0 && !transferReport && (
+        {replacements > 0 && !started && (
           <Callout tone="warning">
             <b className="font-semibold">Replace</b> deletes the existing item
             at its path before recreating it. You confirm this before anything
             is written.
           </Callout>
         )}
-        {transferReport && !failed && (
-          <p className="text-sm font-medium text-quanta-denim">
-            {reportSummary(transferReport)} Final destination:{' '}
-            <Link
-              className="text-quanta-sapphire underline"
-              href={transferReport.destinationUrl}
-            >
-              {transferReport.destinationUrl}
-            </Link>
-          </p>
-        )}
-        {failed && transferReport && (
-          <Callout tone="warning">
-            <span className="font-semibold">Stopped before finishing.</span>{' '}
-            {reportSummary(transferReport)} Then{' '}
-            <span className="font-mono break-all">{failed.destinationUrl}</span>{' '}
-            failed: {failed.message}
-            {failed.restored !== undefined && (
-              <span className="mt-1 block text-xs">
-                {failed.restored
-                  ? 'The original content at that path was restored.'
-                  : 'The original content at that path could not be restored.'}
-              </span>
-            )}
-            <span className="mt-1 block text-xs">
-              Error code: {failed.code}
-            </span>
+        {started && (
+          <Callout tone="info">
+            Beaming started. Follow its progress on the Activity tab.
           </Callout>
         )}
       </div>
@@ -754,22 +718,26 @@ function JobCard({
   title,
   children,
 }: {
-  tone: 'done' | 'failed';
+  tone: 'running' | 'done' | 'failed' | 'cancelled';
   title: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const badge = {
+    running: 'bg-quanta-arctic text-quanta-royal',
+    done: 'bg-quanta-mint text-quanta-turtle',
+    failed: 'bg-quanta-ballet text-quanta-candy',
+    cancelled: 'bg-quanta-snow text-quanta-pigeon',
+  }[tone];
   return (
     <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
       <div className="flex items-start gap-3">
         <span
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-            tone === 'failed'
-              ? 'bg-quanta-ballet text-quanta-candy'
-              : 'bg-quanta-mint text-quanta-turtle'
-          }`}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${badge}`}
         >
           <Icon
-            name={tone === 'failed' ? 'close' : 'check'}
+            name={
+              tone === 'running' ? 'beam' : tone === 'done' ? 'check' : 'close'
+            }
             className="h-4 w-4"
           />
         </span>
@@ -784,15 +752,148 @@ function JobCard({
   );
 }
 
-function ActivityPanel({ result }: { result: ActionResult | undefined }) {
-  function body() {
-    if (!result) {
-      return (
-        <ActivityEmpty hint="Runs you start appear here with their report." />
-      );
-    }
-    if (result.ok === false) {
-      return (
+/** The newer of two snapshots of one job. */
+function newer(left: JobSnapshot, right: JobSnapshot): JobSnapshot {
+  if (left.finishedAt && !right.finishedAt) return left;
+  if (right.finishedAt && !left.finishedAt) return right;
+  return right.progress.done >= left.progress.done ? right : left;
+}
+
+/**
+ * The jobs from the loader and the last action, kept current by the server's
+ * event stream.
+ */
+function useLiveJobs(seed: JobSnapshot[]): JobSnapshot[] {
+  const [streamed, setStreamed] = useState<JobSnapshot[]>([]);
+
+  useEffect(() => {
+    const source = new EventSource('/@@controlpanel/mr-scotty/events');
+    source.addEventListener('job', (event) => {
+      const job = JSON.parse(
+        (event as MessageEvent<string>).data,
+      ) as JobSnapshot;
+      setStreamed((current) => [
+        ...current.filter((known) => known.id !== job.id),
+        job,
+      ]);
+    });
+    return () => source.close();
+  }, []);
+
+  const byId = new Map<string, JobSnapshot>();
+  for (const job of [...seed, ...streamed]) {
+    const known = byId.get(job.id);
+    byId.set(job.id, known ? newer(known, job) : job);
+  }
+  return [...byId.values()].sort((left, right) =>
+    right.startedAt.localeCompare(left.startedAt),
+  );
+}
+
+function CancelButton({ jobId }: { jobId: string }) {
+  const fetcher = useFetcher();
+  return (
+    <fetcher.Form method="post">
+      <input type="hidden" name="intent" value="cancel" />
+      <input type="hidden" name="jobId" value={jobId} />
+      <Button
+        type="submit"
+        variant="neutral"
+        size="S"
+        isDisabled={fetcher.state !== 'idle'}
+      >
+        {fetcher.state !== 'idle' ? 'Cancelling…' : 'Cancel'}
+      </Button>
+    </fetcher.Form>
+  );
+}
+
+function JobItem({ job }: { job: JobSnapshot }) {
+  const { report, progress } = job;
+  const destinationLink = report && (
+    <Link
+      className="text-quanta-sapphire underline"
+      href={report.destinationUrl}
+    >
+      Open destination
+    </Link>
+  );
+
+  if (job.status === 'running') {
+    return (
+      <JobCard tone="running" title={`Beaming ${job.sourceUrl}`}>
+        <div className="mt-3 flex items-end gap-4">
+          <ProgressBar
+            label={`${progress.done} of ${plural(progress.total, 'item')}`}
+            value={progress.done}
+            maxValue={Math.max(progress.total, 1)}
+            className="flex-1"
+          />
+          <CancelButton jobId={job.id} />
+        </div>
+        {progress.current && (
+          <p className="mt-2 truncate font-mono text-xs text-quanta-pigeon">
+            {progress.current.status} {progress.current.destinationUrl}
+          </p>
+        )}
+      </JobCard>
+    );
+  }
+
+  const failed = report?.failed;
+  const title =
+    job.status === 'done'
+      ? `Beamed ${job.sourceUrl}`
+      : job.status === 'cancelled'
+        ? `Cancelled ${job.sourceUrl}`
+        : report
+          ? `Partially beamed ${job.sourceUrl}`
+          : `Could not beam ${job.sourceUrl}`;
+  return (
+    <JobCard tone={job.status} title={title}>
+      <p className="mt-1 font-mono text-xs break-all text-quanta-pigeon">
+        {job.sourceUrl} → {job.destinationUrl}
+      </p>
+      {report && (
+        <p className="mt-2 text-sm text-quanta-pigeon">
+          {job.status === 'cancelled' &&
+            `Stopped after ${progress.done} of ${plural(progress.total, 'item')}. `}
+          {reportSummary(report)} {destinationLink}
+        </p>
+      )}
+      {failed && (
+        <p className="mt-2 text-xs text-quanta-candy">
+          Stopped at {failed.destinationUrl}: {failed.message}
+          {failed.restored !== undefined &&
+            (failed.restored
+              ? ' The original content at that path was restored.'
+              : ' The original content at that path could not be restored.')}
+        </p>
+      )}
+      {job.error && (
+        <p className="mt-2 text-xs text-quanta-candy">
+          {job.error.message} (error code: {job.error.code})
+        </p>
+      )}
+      {report && report.warnings.length > 0 && (
+        <div className="mt-3">
+          <WorkflowWarnings warnings={report.warnings} />
+        </div>
+      )}
+    </JobCard>
+  );
+}
+
+function ActivityPanel({
+  result,
+  jobs,
+}: {
+  result: ActionResult | undefined;
+  jobs: JobSnapshot[];
+}) {
+  return (
+    <div className="flex flex-col gap-4" aria-live="polite">
+      {result?.ok === false && (
         <JobCard tone="failed" title="Transfer failed to start">
           <p className="mt-1 text-sm text-quanta-denim">
             {result.error.message}
@@ -801,52 +902,21 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
             Error code: {result.error.code}
           </p>
         </JobCard>
-      );
-    }
-    if (result.intent !== 'transfer') {
-      return (
-        <ActivityEmpty hint="Preflight ran, but nothing has been beamed yet. Completed transfers show up here." />
-      );
-    }
-
-    const failed = result.report.failed;
-    return (
-      <JobCard
-        tone={failed ? 'failed' : 'done'}
-        title={`${failed ? 'Partially beamed' : 'Beamed'} ${result.form.sourceUrl}`}
-      >
-        <p className="mt-1 font-mono text-xs break-all text-quanta-pigeon">
-          {result.form.sourceUrl} → {result.report.destinationUrl}
-        </p>
-        <p className="mt-2 text-sm text-quanta-pigeon">
-          {reportSummary(result.report)}{' '}
-          <Link
-            className="text-quanta-sapphire underline"
-            href={result.report.destinationUrl}
-          >
-            Open destination
-          </Link>
-        </p>
-        {failed && (
-          <p className="mt-2 text-xs text-quanta-candy">
-            Stopped at {failed.destinationUrl}: {failed.message}
-          </p>
-        )}
-        {result.report.warnings.length > 0 && (
-          <div className="mt-3">
-            <WorkflowWarnings warnings={result.report.warnings} />
-          </div>
-        )}
-      </JobCard>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      {body()}
+      )}
+      {jobs.length === 0 && result?.ok !== false && (
+        <ActivityEmpty
+          hint={
+            hasPlan(result)
+              ? 'Preflight ran, but nothing has been beamed yet. Transfers show up here as they run.'
+              : 'Transfers show up here as they run, with their report.'
+          }
+        />
+      )}
+      {jobs.map((job) => (
+        <JobItem key={job.id} job={job} />
+      ))}
       <p className="text-center text-xs text-quanta-pigeon">
-        Live progress, cancellation, and run history arrive with persistent
-        jobs.
+        Runs are kept on this server until it restarts.
       </p>
     </div>
   );
@@ -854,9 +924,18 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
 
 export default function MrScotty() {
   const { t } = useTranslation();
-  const { destinationUrl, maxItems } = useLoaderData<typeof loader>();
+  const {
+    destinationUrl,
+    maxItems,
+    jobs: loadedJobs,
+  } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>() as ActionResult | undefined;
   const navigation = useNavigation();
+  const jobs = useLiveJobs(
+    result?.ok === true && result.intent === 'transfer'
+      ? [...loadedJobs, result.job]
+      : loadedJobs,
+  );
   const busy = navigation.state !== 'idle';
 
   const [tab, setTab] = useState<'new' | 'activity'>('new');
@@ -864,13 +943,13 @@ export default function MrScotty() {
   const [includeChildren, setIncludeChildren] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sourceUrlValue, setSourceUrlValue] = useState(
-    result?.ok ? result.form.sourceUrl : '',
+    hasPlan(result) ? result.form.sourceUrl : '',
   );
   const [destinationUrlValue, setDestinationUrlValue] =
     useState(destinationUrl);
 
   useEffect(() => {
-    if (!result?.ok) return;
+    if (!hasPlan(result)) return;
     setPolicy(result.form.conflictPolicy);
     setIncludeChildren(result.form.includeChildren);
     setSourceUrlValue(result.form.sourceUrl);
@@ -1095,11 +1174,11 @@ export default function MrScotty() {
                 </p>
               </section>
             )}
-            {result?.ok === true && <PlanReview result={result} />}
+            {hasPlan(result) && <PlanReview result={result} />}
           </TabPanel>
 
           <TabPanel id="activity" shouldForceMount className="p-0 inert:hidden">
-            <ActivityPanel result={result} />
+            <ActivityPanel result={result} jobs={jobs} />
           </TabPanel>
         </Tabs>
 

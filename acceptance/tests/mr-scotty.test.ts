@@ -176,6 +176,21 @@ test.describe('Mr. Scotty', () => {
     await page.getByRole('button', { name: 'Beam content' }).click();
     await expectBeamed(page, `${sourceApiURL}/${sourceId}`);
 
+    // The run stays in the Activity history after a reload.
+    await page.reload();
+    await waitForMrScottyHydration(page);
+    const activityTab = page.getByRole('tab', { name: 'Activity' });
+    // The tab only switches once the page has hydrated.
+    await expect(async () => {
+      await activityTab.click();
+      await expect(activityTab).toHaveAttribute('aria-selected', 'true', {
+        timeout: 1_000,
+      });
+    }).toPass({ timeout: 15_000 });
+    await expect(
+      page.getByText(`Beamed ${sourceApiURL}/${sourceId}`, { exact: true }),
+    ).toBeVisible();
+
     const destinationHeaders = bearerAuth(destinationToken);
     const destinationDocument = await getJson(
       page,
@@ -542,8 +557,14 @@ test.describe('Mr. Scotty', () => {
       const { id, before, destinationApiURL, destinationHeaders } =
         await beamOverExisting(page, 'Skip existing content', 'skip');
 
+      // The Activity history also holds earlier runs, so look in this run's card.
       await expect(
-        page.getByRole('tabpanel').getByText('Skipped 1 item.'),
+        page
+          .getByRole('tabpanel')
+          .locator('div.rounded-xl', {
+            hasText: `Beamed ${getDefaultSourceApiURL()}/${id}`,
+          })
+          .getByText('Skipped 1 item.'),
       ).toBeVisible();
       const after = await getJson(
         page,

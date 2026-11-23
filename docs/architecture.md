@@ -61,6 +61,16 @@ For example, transferring `https://old.example/Plone/news/launch` to `https://ne
 The transfer code is independent of React Router UI code.
 This boundary will allow the synchronous first slice to move behind a persistent job runner and Server-Sent Events without changing content planning or execution.
 
+## Jobs and live activity
+
+"Inspect transfer" builds the plan in the request, as before.
+"Beam content" builds and checks the plan in the request too, so problems such as conflicts still come back at once, and then hands the writing to a background job on the Aurora server.
+
+- Jobs live in memory (`server/jobs.server.ts`): a running job and the history (the last 50 runs) are lost when the server restarts, and each server process only knows its own jobs.
+- The executor reports progress before each operation. The `/@@controlpanel/mr-scotty/events` route streams every job update as server-sent events, which the Activity tab shows live: a progress bar, the item being written, and the report when the job ends.
+- Cancel stops a job between operations: the item being written finishes, nothing after it is attempted, and the report says how far it got.
+- The events route, like the page, is for Managers only.
+
 ## Security
 
 The route is gated on the Manager role, not mere authentication: the loader and
@@ -99,7 +109,7 @@ TODO:
 - Preserve creation and modification dates (needs a backend endpoint), ownership, aliases, translations, local roles, and sharing.
 - Add content-type mapping and project-specific transformer registration.
 - Add querystring preview.
-- Add persistent jobs, SSE progress, cancellation, retry, and restart recovery.
+- Keep jobs across server restarts and processes; retry a failed or cancelled run.
 - Transfer external image URLs and images embedded in rich-text HTML.
 - Add production resource limits, DNS rebinding protection, and saved
   connections with encrypted secrets (the SSRF allowlist and private-network

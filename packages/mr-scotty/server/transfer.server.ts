@@ -139,6 +139,8 @@ export interface TransferReport {
    * and `updated` happened before it; renamed items are in `created`; nothing after it was attempted. `restored` reports
    * whether a half-done replace put its original content back.
    */
+  /** Set when the transfer was cancelled before it finished. */
+  cancelled?: boolean;
   failed?: {
     sourceUrl: string;
     destinationUrl: string;
@@ -1492,10 +1494,29 @@ async function alignReviewState(
   };
 }
 
+export interface TransferProgress {
+  /** How many operations are finished. */
+  done: number;
+  total: number;
+  /** The operation being written now, if any. */
+  current?: Pick<TransferOperation, 'destinationUrl' | 'status' | 'kind'>;
+}
+
+export interface ExecuteOptions {
+  /** Called before each operation, and once more when the run ends. */
+  onProgress?: (progress: TransferProgress) => void;
+  /**
+   * Cancels the run between operations: the one being written finishes, and
+   * nothing after it is attempted.
+   */
+  signal?: AbortSignal;
+}
+
 export async function executeTransferPlan(
   plan: TransferPlan,
   destinationAuth: EndpointAuth,
   fetchImpl: Fetch = fetch,
+  { onProgress, signal }: ExecuteOptions = {},
 ): Promise<TransferReport> {
   const selectedOperation = plan.operations.find(
     (operation) => operation.sourceUrl === plan.sourceUrl,
@@ -1624,7 +1645,23 @@ export async function executeTransferPlan(
     };
   };
 
+  const total = plan.operations.length;
+  let done = 0;
   operations: for (const operation of plan.operations) {
+    if (signal?.aborted) {
+      report.cancelled = true;
+      break;
+    }
+    onProgress?.({
+      done,
+      total,
+      current: {
+        destinationUrl: operation.destinationUrl,
+        status: operation.status,
+        kind: operation.kind,
+      },
+    });
+    done += 1;
     if (operation.status === 'reuse') {
       report.reused.push(operation.destinationUrl);
       continue;
@@ -1720,5 +1757,9 @@ export async function executeTransferPlan(
   }
 
   await restoreOrder();
+  onProgress?.({
+    done: report.failed ? done - 1 : report.cancelled ? done : total,
+    total,
+  });
   return report;
 }
