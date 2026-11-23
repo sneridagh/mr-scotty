@@ -1,0 +1,1 @@
+Open destination in Activity now opens the page people see: the Aurora page for content on this site, and the frontend named in plone.volto's `volto.frontend_domain` for another site, instead of the backend. Long paths and error messages in Activity wrap instead of being cut off. @sneridagh

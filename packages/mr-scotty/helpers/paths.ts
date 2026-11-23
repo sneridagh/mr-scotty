@@ -56,3 +56,28 @@ export function siteLabel(url: string, thisSiteUrl?: string): string {
   if (thisSiteUrl && isWithin(url, thisSiteUrl)) return 'this site';
   return parse(url)?.host ?? url;
 }
+
+/**
+ * The page people see for the content at `url` on the destination: the
+ * Aurora site's own page for its own backend, the site's frontend when it is
+ * known, and otherwise the backend URL itself.
+ */
+export function publicUrl(
+  url: string,
+  {
+    thisSiteUrl,
+    siteUrl,
+    frontendUrl,
+  }: { thisSiteUrl?: string; siteUrl?: string; frontendUrl?: string },
+): string {
+  if (thisSiteUrl && isWithin(url, thisSiteUrl)) {
+    return sitePath(url, thisSiteUrl);
+  }
+  if (frontendUrl && siteUrl && isWithin(url, siteUrl)) {
+    const path = sitePath(url, siteUrl);
+    return (
+      `${frontendUrl.replace(/\/+$/, '')}${path === '/' ? '' : path}` || '/'
+    );
+  }
+  return url;
+}
