@@ -71,6 +71,7 @@ import {
   type TransferReport,
 } from '../server/transfer.server';
 import BeamIcon from '../components/BeamIcon';
+import { canConvertToPlate, convertToPlate } from '../server/plate.server';
 import { describeToken } from '../helpers/token';
 import {
   isWithin,
@@ -139,6 +140,7 @@ type SubmittedForm = {
   conflictPolicy: ConflictPolicy;
   includeChildren: boolean;
   typeMap: TypeMap;
+  convertToPlate: boolean;
 };
 
 /** Source type → destination type, or `null` to skip its items. */
@@ -286,6 +288,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
     const includeChildren = formData.get('includeChildren') === 'true';
     const typeMap = readTypeMap(formData);
+    const toPlate = formData.get('convertToPlate') === 'true';
     const input = {
       sourceUrl,
       destinationUrl,
@@ -294,6 +297,7 @@ export async function action({ request }: ActionFunctionArgs) {
       conflictPolicy,
       includeChildren,
       typeMap,
+      convertToPlate: toPlate,
     };
     const form = {
       sourceUrl,
@@ -301,9 +305,14 @@ export async function action({ request }: ActionFunctionArgs) {
       conflictPolicy,
       includeChildren,
       typeMap,
+      convertToPlate: toPlate,
     };
     const intent = String(formData.get('intent') || 'preflight');
-    const plan = await createTransferPlan(input);
+    const plan = await createTransferPlan(input, fetch, undefined, {
+      ...(toPlate && canConvertToPlate()
+        ? { plateConverter: convertToPlate }
+        : {}),
+    });
 
     if (intent === 'transfer') {
       assertTypesResolved(plan);
@@ -736,6 +745,7 @@ function PlanTableView({ plan }: { plan: TransferPlan }) {
                         <RowTag>not on destination</RowTag>
                       )}
                       {operation.sourceType && <RowTag>mapped</RowTag>}
+                      {operation.convertedToPlate && <RowTag>Plate</RowTag>}
                       {operation.skipReason === 'type' && (
                         <RowTag>type skipped</RowTag>
                       )}
@@ -866,6 +876,40 @@ function TypeIssuesPanel({
   );
 }
 
+/** What converting to Plate does to this plan, and what it leaves out. */
+function PlateNote({ plan }: { plan: TransferPlan }) {
+  const converted = plan.operations.filter(
+    (operation) => operation.convertedToPlate,
+  ).length;
+  const dropped = new Map<string, number>();
+  for (const operation of plan.operations) {
+    for (const block of operation.droppedBlocks ?? []) {
+      dropped.set(block, (dropped.get(block) ?? 0) + 1);
+    }
+  }
+  return (
+    <>
+      <Callout tone="info">
+        {converted > 0
+          ? `${plural(converted, 'page')} ${
+              converted === 1 ? 'is' : 'are'
+            } written in Aurora's document model: the blocks become one Plate document.`
+          : 'Nothing in this plan has blocks to convert to Plate.'}
+      </Callout>
+      {dropped.size > 0 && (
+        <Callout tone="warning">
+          <b className="font-semibold">Left out:</b> Aurora cannot convert{' '}
+          {[...dropped]
+            .map(([block, pages]) => `${block} (${plural(pages, 'page')})`)
+            .join(', ')}
+          . These blocks are not written. Beam without the conversion to keep
+          them as classic blocks.
+        </Callout>
+      )}
+    </>
+  );
+}
+
 function PlanReview({
   result,
   beamButton,
@@ -953,6 +997,7 @@ function PlanReview({
             the block URLs are rewritten to the destination.
           </Callout>
         )}
+        {plan.convertToPlate && !started && <PlateNote plan={plan} />}
         {updates > 0 && !started && (
           <Callout tone="info">
             <b className="font-semibold">Update</b> writes the source fields
@@ -1494,6 +1539,11 @@ export default function MrScotty() {
     hasPlan(result) ? result.form.typeMap : {},
   );
   const submit = useSubmit();
+  // Whether to write Aurora pages. It follows the destination, on for this
+  // site, until someone sets it.
+  const [plateChoice, setPlateChoice] = useState<boolean | undefined>(
+    hasPlan(result) ? result.form.convertToPlate : undefined,
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sourceUrlValue, setSourceUrlValue] = useState(
     hasPlan(result) ? result.form.sourceUrl : '',
@@ -1507,6 +1557,7 @@ export default function MrScotty() {
     setPolicy(result.form.conflictPolicy);
     setIncludeChildren(result.form.includeChildren);
     setTypeMap(result.form.typeMap);
+    setPlateChoice(result.form.convertToPlate);
     setSourceUrlValue(result.form.sourceUrl);
     setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
@@ -1522,6 +1573,9 @@ export default function MrScotty() {
       ? result.plan
       : undefined;
   // Only a plan inspected with Replace knows what Replace deletes.
+  const toPlate =
+    plateChoice ?? isWithin(destinationUrlValue.trim(), destinationUrl);
+
   // A type the destination lacks with no choice yet blocks beaming.
   const unresolvedTypes = Boolean(
     hasPlan(result) &&
@@ -1620,6 +1674,9 @@ export default function MrScotty() {
               {includeChildren && (
                 <input type="hidden" name="includeChildren" value="true" />
               )}
+              {toPlate && (
+                <input type="hidden" name="convertToPlate" value="true" />
+              )}
               {Object.entries(typeMap).map(([sourceType, target]) => (
                 <input
                   key={sourceType}
@@ -1683,6 +1740,14 @@ export default function MrScotty() {
                         isRequired
                       />
                     </div>
+                    <Checkbox
+                      isSelected={toPlate}
+                      onChange={setPlateChoice}
+                      isDisabled={busy}
+                      description="Write page bodies as one Plate document in the main region, the way Aurora stores them. Blocks Aurora cannot convert are left out, and the plan names them. Leave it off for Volto sites."
+                    >
+                      Convert blocks to Aurora&apos;s document model (Plate)
+                    </Checkbox>
                     <TransferPreview
                       sourceUrl={sourceUrlValue.trim()}
                       destinationUrl={destinationUrlValue.trim()}

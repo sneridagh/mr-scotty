@@ -1414,6 +1414,46 @@ describe('content types', () => {
   });
 });
 
+describe('Plate conversion', () => {
+  test('converts page payloads with the given converter', async () => {
+    const fetchImpl = successfulFetch();
+    const converter = vi.fn((payload: Record<string, unknown>) => ({
+      payload: {
+        ...payload,
+        blocks: { main: { '@type': 'plate', value: [] } },
+      },
+      droppedBlocks: ['gridBlock'],
+    }));
+    const plan = await createTransferPlan(
+      { ...input, convertToPlate: true },
+      fetchImpl as typeof fetch,
+      undefined,
+      { plateConverter: converter },
+    );
+
+    expect(plan.convertToPlate).toBe(true);
+    // Only content is converted, not the structural parent.
+    expect(converter).toHaveBeenCalledTimes(1);
+    expect(plan.operations.at(-1)).toMatchObject({
+      convertedToPlate: true,
+      droppedBlocks: ['gridBlock'],
+      payload: { blocks: { main: { '@type': 'plate' } } },
+    });
+    expect(plan.operations[0].convertedToPlate).toBeUndefined();
+  });
+
+  test('refuses the option on a server that cannot convert', async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      createTransferPlan(
+        { ...input, convertToPlate: true },
+        fetchImpl as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'plate_unavailable' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {

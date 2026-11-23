@@ -38,6 +38,21 @@ async function typeSourceUrl(page: Page, sourceUrl: string) {
   }).toPass({ timeout: 20_000 });
 }
 
+/** Turns the conversion to Aurora's document model on or off. */
+async function setPlateConversion(page: Page, on: boolean) {
+  const option = page.getByRole('checkbox', {
+    name: "Convert blocks to Aurora's document model (Plate)",
+  });
+  await expect(async () => {
+    if ((await option.isChecked()) !== on) {
+      await page
+        .getByText("Convert blocks to Aurora's document model (Plate)")
+        .click();
+    }
+    await expect(option).toBeChecked({ checked: on, timeout: 1_000 });
+  }).toPass({ timeout: 10_000 });
+}
+
 async function waitForMrScottyHydration(page: Page) {
   await expect(
     page.getByRole('button', { name: 'Inspect transfer' }),
@@ -212,10 +227,22 @@ test.describe('Mr. Scotty', () => {
 
     expect(destinationDocument.UID).toBe(sourceDocument.UID);
     expect(destinationImage.UID).toBe(sourceImage.UID);
-    const destinationBlocks = destinationDocument.blocks as {
-      image: { url: string };
+    // Beamed to this Aurora site, the page is written in its document model:
+    // one Plate document, starting with the title, with the image block as a
+    // Plone block that points at the beamed image.
+    const { main } = destinationDocument.blocks as {
+      main: { '@type': string; value: Array<Record<string, unknown>> };
     };
-    expect(destinationBlocks.image.url).toBe(`${destinationApiURL}/${imageId}`);
+    expect(main['@type']).toBe('plate');
+    expect(main.value[0]).toMatchObject({
+      type: 'title',
+      children: [{ text: 'Mr. Scotty source document' }],
+    });
+    expect(main.value[1]).toMatchObject({
+      type: 'ploneBlock',
+      '@type': 'image',
+      url: `${destinationApiURL}/${imageId}`,
+    });
 
     // Each item arrives in its source workflow state, with its publication
     // date: the published document is published, the private image private.
@@ -355,6 +382,8 @@ test.describe('Mr. Scotty', () => {
     // selection sticks. The native radio input is visually hidden behind its
     // styled card, so target the option's label text and confirm it took.
     await typeSourceUrl(page, `${sourceApiURL}/${sourceId}`);
+    // Classic blocks, as a Volto destination would get them.
+    await setPlateConversion(page, false);
     const replaceRadio = page.getByRole('radio', {
       name: /Replace existing content/,
     });

@@ -38,6 +38,13 @@ The browser only starts jobs and observes their state.
     Children and image references follow the new id.
   - `replace` deletes the existing item and recreates it, after a confirmation.
   Structural parents are always reused, and a referenced image already at its path with the same UUID is reused under `fail`, `skip`, and `rename`.
+- With **Convert blocks to Aurora's document model (Plate)**, page bodies are written the way Aurora stores them: one Plate document in the `main` region of `blocks`, starting with a title node, and an empty `blocks_layout`.
+  The option is on by default when the destination is the Aurora site's own backend, and should stay off for Volto sites.
+  - The conversion uses the conversion functions the running Aurora server registers (`contentMigration`, `somersaultBlockMigration`, and `somersaultMigration` utilities), the same ones Aurora runs when it reads classic content, so conversions that other add-ons register are included.
+  - Slate text keeps its nodes, with marks, links, and lists brought to Plate's shape. Registered blocks, such as image, teaser, listing, and video, become `ploneBlock` nodes with their data. Image references are rewritten to the destination before converting.
+  - Blocks that no conversion handles, such as `gridBlock` or `slateTable`, are left out. The plan names them per page, so they can be beamed without the conversion instead.
+  - Content that already has a `main` Plate region, or the older `__somersault__` block, is written as it is.
+  - Resolving links to `resolveuid`, link integrity, and full-text indexing of the `main` region need plone.restapi 10.3.0 or later on the destination.
 - Content types are checked during preflight against the destination's `@types`.
   An item whose type the destination lacks is flagged, and nothing is beamed until each such type has a choice: beam its items as one of the destination's types, or skip them and everything inside them.
   A mapped item keeps its fields; the plan lists the source fields with a value that the chosen type has no field for, because Plone drops them silently.
