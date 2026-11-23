@@ -1,0 +1,1 @@
+Fixed the destination existence check: a missing path that Plone resolves to a view (such as `images`, which answered 400) or to content acquired from further up the tree is now treated as missing, instead of aborting the transfer or reusing the wrong parent. @sneridagh

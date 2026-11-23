@@ -332,6 +332,22 @@ function authorization(auth: EndpointAuth): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether a redirect sends an `++api++` request to the same path without it,
+ * which is how a frontend that does not proxy the REST API answers.
+ */
+function redirectsAwayFromApi(url: URL, location: string | null): boolean {
+  if (!location || !url.pathname.split('/').includes(API_TRAVERSAL_SEGMENT)) {
+    return false;
+  }
+  const target = new URL(location, url);
+  return (
+    target.origin === url.origin &&
+    !target.pathname.split('/').includes(API_TRAVERSAL_SEGMENT) &&
+    canonicalizePathname(target.pathname) === canonicalizePathname(url.pathname)
+  );
+}
+
 async function requestJson(
   url: URL,
   auth: EndpointAuth,
@@ -351,6 +367,13 @@ async function requestJson(
   });
 
   if (response.status >= 300 && response.status < 400) {
+    if (redirectsAwayFromApi(url, response.headers.get('Location'))) {
+      throw new TransferError(
+        'restapi_not_exposed',
+        `${url.origin} does not serve the Plone REST API: it redirected ${url} to the same page without ++api++. This is usually a frontend such as Aurora. Use the Plone backend URL instead.`,
+        502,
+      );
+    }
     throw new TransferError(
       'redirect_rejected',
       `The REST API redirected ${url}. Redirects are not followed for server-side transfer requests.`,
@@ -384,13 +407,31 @@ async function contentExists(
   auth: EndpointAuth,
   fetchImpl: Fetch,
 ): Promise<ContentRecord | undefined> {
+  let content: ContentRecord;
   try {
-    return await requestJson(apiUrlAtRoot(url, rootUrl), auth, fetchImpl);
+    content = await requestJson(apiUrlAtRoot(url, rootUrl), auth, fetchImpl);
   } catch (error) {
-    if (error instanceof TransferError && error.status === 404)
+    // A missing id can still traverse to something that is not content: a
+    // view such as `@@images` answers 400 ("Missing image scale path").
+    if (
+      error instanceof TransferError &&
+      (error.status === 404 || error.status === 400)
+    )
       return undefined;
     throw error;
   }
+  // Zope acquisition answers a missing path with content found further up,
+  // such as `/archive/news` with the site's `/news`. Only content that lives
+  // at the requested path counts.
+  if (typeof content['@id'] === 'string') {
+    const found = canonicalizePathname(
+      decodeURIComponent(new URL(content['@id'], url).pathname),
+    );
+    if (found !== canonicalizePathname(decodeURIComponent(url.pathname))) {
+      return undefined;
+    }
+  }
+  return content;
 }
 
 function rebaseApiUrl(value: string, endpoint: URL): URL {

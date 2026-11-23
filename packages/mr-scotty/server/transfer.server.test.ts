@@ -416,6 +416,78 @@ describe('conflict policies', () => {
   });
 });
 
+describe('destination existence check', () => {
+  function fetchAnswering(path: string, response: () => Response) {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      if (
+        (init?.method || 'GET') === 'GET' &&
+        canonicalRequestPath(url) === path
+      ) {
+        return response();
+      }
+      return successfulFetch()(resource, init);
+    });
+    return fetchImpl;
+  }
+
+  test('ignores content acquired from further up the tree', async () => {
+    // Zope answers /archive/news with the site's /news when it is missing.
+    const fetchImpl = fetchAnswering('/Plone/archive/news', () =>
+      json({ ...news, '@id': 'https://new.example/Plone/news' }),
+    );
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    expect(plan.operations.map((operation) => operation.status)).toEqual([
+      'create',
+      'create',
+    ]);
+  });
+
+  test('treats a path that resolves to a view as missing', async () => {
+    // A missing `images` resolves to the @@images view, which answers 400.
+    const fetchImpl = fetchAnswering('/Plone/archive/news', () =>
+      json({ message: 'Missing image scale path', type: 'BadRequest' }, 400),
+    );
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    expect(plan.operations.map((operation) => operation.status)).toEqual([
+      'create',
+      'create',
+    ]);
+  });
+});
+
+describe('redirects', () => {
+  function redirectingSource(location: string) {
+    return vi.fn(
+      async () =>
+        new Response(null, { status: 302, headers: { Location: location } }),
+    );
+  }
+
+  test('explains a frontend that does not serve the REST API', async () => {
+    // Aurora answers /++api++/news/launch with a redirect to /news/launch.
+    await expect(
+      createTransferPlan(
+        { ...input, sourceUrl: 'https://old.example/news/launch' },
+        redirectingSource('/news/launch') as typeof fetch,
+      ),
+    ).rejects.toMatchObject({
+      code: 'restapi_not_exposed',
+      message: expect.stringContaining('Use the Plone backend URL instead.'),
+    });
+  });
+
+  test('still rejects any other redirect', async () => {
+    await expect(
+      createTransferPlan(
+        input,
+        redirectingSource('https://elsewhere.example/login') as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'redirect_rejected' });
+  });
+});
+
 describe('executeTransferPlan', () => {
   test('creates structural parents before the selected content', async () => {
     const fetchImpl = successfulFetch();

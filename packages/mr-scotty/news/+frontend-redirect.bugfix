@@ -1,0 +1,1 @@
+A source or destination URL on a frontend that does not serve the REST API, such as an Aurora site, now fails with a `restapi_not_exposed` error that says to use the Plone backend URL, instead of a generic `redirect_rejected`. @sneridagh
