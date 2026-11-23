@@ -3,12 +3,28 @@ export type EndpointAuth =
   | { type: 'bearer'; token: string }
   | { type: 'basic'; username: string; password: string };
 
+/**
+ * How content whose destination path is already taken is handled:
+ * - `fail` aborts before any write (the default);
+ * - `skip` leaves the existing item untouched and beams the rest;
+ * - `update` patches the existing item's fields in place, keeping its UUID,
+ *   history and position;
+ * - `rename` creates the incoming item under a free id (`<id>-1`, …) next to
+ *   the existing one;
+ * - `replace` deletes the existing item and recreates it.
+ *
+ * Structural parents are always reused. A referenced image that is already
+ * at its path with the same UUID is reused under `fail`, `skip` and `rename`.
+ */
+export type ConflictPolicy = 'fail' | 'skip' | 'update' | 'rename' | 'replace';
+
 export interface TransferInput {
   sourceUrl: string;
   destinationUrl: string;
   sourceAuth: EndpointAuth;
   destinationAuth: EndpointAuth;
-  /** Replace existing imported content instead of failing on path conflicts. */
+  conflictPolicy?: ConflictPolicy;
+  /** @deprecated alias for `conflictPolicy: 'replace'`. */
   overwrite?: boolean;
 }
 
@@ -46,7 +62,9 @@ export interface TransferOperation {
   uid: string;
   type: string;
   kind: 'placeholder' | 'content';
-  status: 'create' | 'reuse' | 'replace';
+  status: 'create' | 'reuse' | 'replace' | 'skip' | 'update' | 'rename';
+  /** For `rename`: the taken URL the item was moved away from. */
+  renamedFrom?: string;
   payload?: Record<string, unknown>;
 }
 
@@ -57,6 +75,8 @@ export interface TransferPlan {
   destinationRootUrl: string;
   sourceRelativePath: string;
   destinationPath: string;
+  conflictPolicy: ConflictPolicy;
+  /** @deprecated use `conflictPolicy`; kept as `conflictPolicy === 'replace'`. */
   overwrite: boolean;
   operations: TransferOperation[];
 }
@@ -74,10 +94,17 @@ export interface TransferReport {
     uid: string;
     kind: TransferOperation['kind'];
   }>;
+  updated: Array<{
+    sourceUrl: string;
+    destinationUrl: string;
+    uid: string;
+    kind: TransferOperation['kind'];
+  }>;
   reused: string[];
+  skipped: string[];
   /**
-   * Set when an operation failed mid-run. Everything in `created`/`replaced`
-   * happened before it; nothing after it was attempted. `restored` reports
+   * Set when an operation failed mid-run. Everything in `created`, `replaced`
+   * and `updated` happened before it; renamed items are in `created`; nothing after it was attempted. `restored` reports
    * whether a half-done replace put its original content back.
    */
   failed?: {
@@ -796,6 +823,19 @@ function placeholderPayload(content: ContentRecord, sourceUrl: URL) {
   };
 }
 
+async function isUidTaken(
+  destinationRoot: URL,
+  uid: string,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<boolean> {
+  const searchUrl = apiUrlAtRoot(destinationRoot, destinationRoot, '@search');
+  searchUrl.searchParams.set('UID', uid);
+  const result = await requestJson(searchUrl, auth, fetchImpl);
+  const items = Array.isArray(result.items) ? result.items : [];
+  return items.length > 0 || Number(result.items_total || 0) > 0;
+}
+
 async function assertUidAvailable(
   destinationRoot: URL,
   destinationUrl: URL,
@@ -803,12 +843,7 @@ async function assertUidAvailable(
   auth: EndpointAuth,
   fetchImpl: Fetch,
 ) {
-  const searchUrl = apiUrlAtRoot(destinationRoot, destinationRoot, '@search');
-  searchUrl.searchParams.set('UID', uid);
-  const result = await requestJson(searchUrl, auth, fetchImpl);
-  const items = Array.isArray(result.items) ? result.items : [];
-
-  if (items.length > 0 || Number(result.items_total || 0) > 0) {
+  if (await isUidTaken(destinationRoot, uid, auth, fetchImpl)) {
     throw new TransferError(
       'uid_conflict',
       `UUID ${uid} already exists at the destination and cannot be created at ${destinationUrl}.`,
@@ -817,12 +852,34 @@ async function assertUidAvailable(
   }
 }
 
+async function findFreeDestinationUrl(
+  parentUrl: URL,
+  baseId: string,
+  rootUrl: URL,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<{ url: URL; id: string }> {
+  for (let suffix = 1; suffix <= 1000; suffix += 1) {
+    const candidateId = `${baseId}-${suffix}`;
+    const candidateUrl = appendPath(parentUrl, candidateId);
+    const exists = await contentExists(candidateUrl, rootUrl, auth, fetchImpl);
+    if (!exists) return { url: candidateUrl, id: candidateId };
+  }
+  throw new TransferError(
+    'rename_exhausted',
+    `Could not find a free id to rename ${baseId} under ${parentUrl}.`,
+    409,
+  );
+}
+
 export async function createTransferPlan(
   input: TransferInput,
   fetchImpl: Fetch = fetch,
   policy: SsrfPolicy = readSsrfPolicyFromEnv(),
 ): Promise<TransferPlan> {
-  const overwrite = input.overwrite === true;
+  const conflictPolicy: ConflictPolicy =
+    input.conflictPolicy ?? (input.overwrite === true ? 'replace' : 'fail');
+  const overwrite = conflictPolicy === 'replace';
   const sourceUrl = normalizeUrl(input.sourceUrl, 'Source URL');
   const destinationUrl = normalizeUrl(input.destinationUrl, 'Destination URL');
   // Referenced resources are rebased to the source origin, so allowing the
@@ -962,15 +1019,20 @@ export async function createTransferPlan(
     );
   }
 
+  // First pass: resolve each node's status and final destination. Nodes come
+  // parents first, so a node's parent destination is already known, and the
+  // children of a renamed item follow it to its new id.
+  type PlannedNode = {
+    node: SourceNode;
+    identity: ReturnType<typeof getIdentity>;
+    destinationItemUrl: URL;
+    destinationParentUrl: URL;
+    status: TransferOperation['status'];
+    renamedFrom?: string;
+    newUid: boolean;
+  };
   const destinationBySourceUrl = new Map<string, string>();
-  for (const node of sourceNodes.values()) {
-    destinationBySourceUrl.set(
-      node.sourceUrl.toString(),
-      appendPath(destinationUrl, ...node.segments).toString(),
-    );
-  }
-
-  const operations: TransferOperation[] = [];
+  const planned: PlannedNode[] = [];
   const orderedNodes = [...sourceNodes.values()].sort(
     (left, right) =>
       left.segments.length - right.segments.length ||
@@ -979,10 +1041,16 @@ export async function createTransferPlan(
 
   for (const node of orderedNodes) {
     const identity = getIdentity(node.content, node.sourceUrl);
-    const destinationItemUrl = appendPath(destinationUrl, ...node.segments);
-    const destinationParentUrl = appendPath(
-      destinationUrl,
-      ...node.segments.slice(0, -1),
+    const parentSegments = node.segments.slice(0, -1);
+    const resolvedParent = destinationBySourceUrl.get(
+      appendPath(source.rootUrl, ...parentSegments).toString(),
+    );
+    const destinationParentUrl = resolvedParent
+      ? new URL(resolvedParent)
+      : appendPath(destinationUrl, ...parentSegments);
+    let destinationItemUrl = appendPath(
+      destinationParentUrl,
+      node.segments.at(-1) as string,
     );
     const existing = await contentExists(
       destinationItemUrl,
@@ -991,39 +1059,9 @@ export async function createTransferPlan(
       fetchImpl,
     );
 
-    if (existing && node.strictConflict && !overwrite) {
-      throw new TransferError(
-        'path_conflict',
-        `Content already exists at ${destinationItemUrl}.`,
-        409,
-      );
-    }
-
-    if (
-      existing &&
-      node.kind === 'placeholder' &&
-      existing.is_folderish !== true
-    ) {
-      throw new TransferError(
-        'parent_not_folderish',
-        `Existing destination parent ${destinationItemUrl} is not a container.`,
-        409,
-      );
-    }
-
-    if (
-      existing &&
-      node.kind === 'content' &&
-      existing.UID &&
-      existing.UID !== identity.uid &&
-      !overwrite
-    ) {
-      throw new TransferError(
-        'resource_path_conflict',
-        `A different content item already exists at referenced resource path ${destinationItemUrl}.`,
-        409,
-      );
-    }
+    let status: TransferOperation['status'];
+    let renamedFrom: string | undefined;
+    let newUid = false;
 
     if (!existing) {
       await assertUidAvailable(
@@ -1033,16 +1071,87 @@ export async function createTransferPlan(
         input.destinationAuth,
         fetchImpl,
       );
+      status = 'create';
+    } else if (node.kind === 'placeholder') {
+      if (existing.is_folderish !== true) {
+        throw new TransferError(
+          'parent_not_folderish',
+          `Existing destination parent ${destinationItemUrl} is not a container.`,
+          409,
+        );
+      }
+      status = 'reuse';
+    } else if (conflictPolicy === 'replace') {
+      status = 'replace';
+    } else if (conflictPolicy === 'update') {
+      if (existing['@type'] !== identity.type) {
+        throw new TransferError(
+          'type_mismatch',
+          `The ${String(existing['@type'])} at ${destinationItemUrl} cannot be updated from a ${identity.type}. Replace or rename it instead.`,
+          409,
+        );
+      }
+      status = 'update';
+    } else if (!node.strictConflict && existing.UID === identity.uid) {
+      // A referenced image that is already there.
+      status = 'reuse';
+    } else if (conflictPolicy === 'skip') {
+      status = 'skip';
+    } else if (conflictPolicy === 'rename') {
+      const free = await findFreeDestinationUrl(
+        destinationParentUrl,
+        identity.id,
+        destination.rootUrl,
+        input.destinationAuth,
+        fetchImpl,
+      );
+      renamedFrom = destinationItemUrl.toString();
+      destinationItemUrl = free.url;
+      // A UUID is unique in a site: when it is already taken, typically by
+      // the item being renamed away from, the copy gets a new one.
+      newUid = await isUidTaken(
+        destination.rootUrl,
+        identity.uid,
+        input.destinationAuth,
+        fetchImpl,
+      );
+      status = 'rename';
+    } else {
+      throw node.strictConflict
+        ? new TransferError(
+            'path_conflict',
+            `Content already exists at ${destinationItemUrl}.`,
+            409,
+          )
+        : new TransferError(
+            'resource_path_conflict',
+            `A different content item already exists at referenced resource path ${destinationItemUrl}.`,
+            409,
+          );
     }
 
-    const status =
-      existing && overwrite && node.kind === 'content'
-        ? 'replace'
-        : existing
-          ? 'reuse'
-          : 'create';
+    destinationBySourceUrl.set(
+      node.sourceUrl.toString(),
+      destinationItemUrl.toString(),
+    );
+    planned.push({
+      node,
+      identity,
+      destinationItemUrl,
+      destinationParentUrl,
+      status,
+      renamedFrom,
+      newUid,
+    });
+  }
+
+  // Second pass: build the payloads, now that every destination is final and
+  // image references can be rewritten to renamed items too.
+  const operations: TransferOperation[] = [];
+  for (const item of planned) {
+    const { node, identity, status } = item;
     let payload: Record<string, unknown> | undefined;
-    if (status !== 'reuse') {
+    if (status !== 'reuse' && status !== 'skip') {
       payload =
         node.kind === 'placeholder'
           ? placeholderPayload(node.content, node.sourceUrl)
@@ -1059,15 +1168,28 @@ export async function createTransferPlan(
           destinationBySourceUrl,
         );
       }
+      if (status === 'rename') {
+        payload.id = decodeURIComponent(
+          item.destinationItemUrl.pathname.split('/').at(-1) as string,
+        );
+        if (item.newUid) delete payload.UID;
+      }
+      if (status === 'update') {
+        // The existing item keeps its type, id and UUID.
+        delete payload['@type'];
+        delete payload.id;
+        delete payload.UID;
+      }
     }
 
     operations.push({
       sourceUrl: node.sourceUrl.toString(),
-      destinationUrl: destinationItemUrl.toString(),
-      destinationParentUrl: destinationParentUrl.toString(),
+      destinationUrl: item.destinationItemUrl.toString(),
+      destinationParentUrl: item.destinationParentUrl.toString(),
       ...identity,
       kind: node.kind,
       status,
+      ...(item.renamedFrom ? { renamedFrom: item.renamedFrom } : {}),
       payload,
     });
   }
@@ -1078,7 +1200,12 @@ export async function createTransferPlan(
     destinationUrl: destinationUrl.toString(),
     destinationRootUrl: destination.rootUrl.toString(),
     sourceRelativePath: `/${segments.join('/')}`,
-    destinationPath: appendPath(destinationUrl, ...segments).pathname,
+    destinationPath: new URL(
+      destinationBySourceUrl.get(
+        appendPath(source.rootUrl, ...segments).toString(),
+      ) ?? appendPath(destinationUrl, ...segments).toString(),
+    ).pathname,
+    conflictPolicy,
     overwrite,
     operations,
   };
@@ -1095,7 +1222,9 @@ export async function executeTransferPlan(
   const report: TransferReport = {
     created: [],
     replaced: [],
+    updated: [],
     reused: [],
+    skipped: [],
     destinationUrl:
       selectedOperation?.destinationUrl ||
       plan.operations.at(-1)?.destinationUrl ||
@@ -1147,6 +1276,29 @@ export async function executeTransferPlan(
   for (const operation of plan.operations) {
     if (operation.status === 'reuse') {
       report.reused.push(operation.destinationUrl);
+      continue;
+    }
+
+    if (operation.status === 'skip') {
+      report.skipped.push(operation.destinationUrl);
+      continue;
+    }
+
+    if (operation.status === 'update') {
+      // Plone applies a PATCH in one transaction, so a failed update leaves
+      // the item as it was.
+      try {
+        await requestJson(
+          apiUrlAtRoot(new URL(operation.destinationUrl), destinationRoot),
+          destinationAuth,
+          fetchImpl,
+          { method: 'PATCH', body: JSON.stringify(operation.payload) },
+        );
+      } catch (error) {
+        recordFailure(operation, error);
+        return report;
+      }
+      report.updated.push(reportItem(operation));
       continue;
     }
 

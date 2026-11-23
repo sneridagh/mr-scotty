@@ -22,7 +22,16 @@ The browser only starts jobs and observes their state.
   `/Plone` are also supported (`/Plone/++api++/item`).
 - Aurora's session token is reused only for its configured Plone destination.
   A source or destination may instead use anonymous, bearer-token, or Basic authentication.
-- The initial conflict policy is `fail`.
+- When content already exists at its destination path, the conflict policy decides what happens:
+  - `fail` (the default) aborts during preflight, before any write.
+  - `skip` leaves the existing item untouched and beams the rest.
+  - `update` patches the existing item with the source fields (`PATCH`), keeping its UUID, id, history, and position.
+    The types must match.
+  - `rename` creates the item next to the existing one under the first free id (`<id>-1`, `<id>-2`, …).
+    The copy keeps the source UUID unless the destination already holds it, in which case Plone assigns a new one.
+    Children and image references follow the new id.
+  - `replace` deletes the existing item and recreates it, after a confirmation.
+  Structural parents are always reused, and a referenced image already at its path with the same UUID is reused under `fail`, `skip`, and `rename`.
 
 For example, transferring `https://old.example/Plone/news/launch` to `https://new.example/Plone/archive` creates `https://new.example/Plone/archive/news/launch`.
 
@@ -77,7 +86,6 @@ TODO:
 - Recreate non-image relations in a second pass and rewrite internal links.
 - Preserve workflow state, ownership, creators, dates, ordering, aliases, translations, local roles, and sharing.
 - Add content-type mapping and project-specific transformer registration.
-- Add `skip`, `update`, and `rename` conflict policies.
 - Add querystring preview and bulk dependency planning.
 - Add persistent jobs, SSE progress, cancellation, retry, and restart recovery.
 - Transfer external image URLs and images embedded in rich-text HTML.
