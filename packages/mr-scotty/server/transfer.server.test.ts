@@ -1000,6 +1000,128 @@ describe('progress and cancellation', () => {
   });
 });
 
+describe('replace safety', () => {
+  const launchPath = '/Plone/archive/news/launch';
+  const downloadUrl =
+    'https://new.example/Plone/archive/news/launch/@@download/image';
+  const oldBytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+  // The item being replaced: a published image with its file.
+  const existingImage = {
+    ...launch,
+    '@id': 'https://new.example/Plone/archive/news/launch',
+    '@type': 'Image',
+    title: 'Old image',
+    review_state: 'published',
+    image: {
+      download: downloadUrl,
+      filename: 'old.png',
+      'content-type': 'image/png',
+    },
+  };
+
+  async function replacePlan() {
+    const planFetch = successfulFetch();
+    planFetch.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      if (
+        (init?.method || 'GET') === 'GET' &&
+        canonicalRequestPath(url) === launchPath
+      ) {
+        return json({ ...existingImage, '@id': url.toString() });
+      }
+      return successfulFetch()(resource, init);
+    });
+    return createTransferPlan(
+      { ...input, conflictPolicy: 'replace' },
+      planFetch as typeof fetch,
+    );
+  }
+
+  /** The destination during the run; `download` answers the file request. */
+  function runFetch(download: () => Response) {
+    const posts: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const execFetch = vi.fn(
+      async (resource: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(resource));
+        const method = init?.method || 'GET';
+        const path = canonicalRequestPath(url);
+        if (url.toString() === downloadUrl) return download();
+        if (method === 'GET' && path === launchPath) {
+          return json({ ...existingImage, '@id': url.toString() });
+        }
+        if (method === 'GET' && path === `${launchPath}/@workflow`) {
+          return json({
+            state: { id: 'private' },
+            transitions: [{ '@id': `${url}/publish` }],
+          });
+        }
+        if (method === 'DELETE') return new Response(null, { status: 204 });
+        if (method === 'POST') {
+          const body = init?.body
+            ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+            : {};
+          posts.push({ path, body });
+          // The incoming item fails to be created; the restore succeeds.
+          if (body.title === 'Launch') {
+            return json({ error: { message: 'recreate failed' } }, 500);
+          }
+          return json({ ...body, '@id': url.toString() }, 201);
+        }
+        return successfulFetch()(resource, init);
+      },
+    );
+    return { execFetch, posts };
+  }
+
+  test('restores a replaced image with its file and its workflow state', async () => {
+    const plan = await replacePlan();
+    const { execFetch, posts } = runFetch(
+      () =>
+        new Response(oldBytes, { headers: { 'Content-Type': 'image/png' } }),
+    );
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      execFetch as typeof fetch,
+    );
+
+    expect(report.failed).toMatchObject({ restored: true });
+    const restore = posts.find(({ body }) => body.title === 'Old image');
+    expect(restore?.body.image).toEqual({
+      data: btoa(String.fromCharCode(...oldBytes)),
+      encoding: 'base64',
+      filename: 'old.png',
+      'content-type': 'image/png',
+    });
+    expect(restore?.body.UID).toBe('launch-uid');
+    // Put back in the state it had: published.
+    expect(posts.map(({ path }) => path)).toContain(
+      `${launchPath}/@workflow/publish`,
+    );
+  });
+
+  test('leaves the item in place when it cannot be backed up', async () => {
+    const plan = await replacePlan();
+    const { execFetch } = runFetch(() => new Response('gone', { status: 500 }));
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      execFetch as typeof fetch,
+    );
+
+    expect(report.failed).toMatchObject({
+      destinationUrl: 'https://new.example/Plone/archive/news/launch',
+      code: 'backup_failed',
+    });
+    expect(report.failed?.restored).toBeUndefined();
+    expect(
+      execFetch.mock.calls.filter(([, init]) => init?.method === 'DELETE'),
+    ).toEqual([]);
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {
