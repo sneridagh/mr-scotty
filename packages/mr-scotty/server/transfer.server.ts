@@ -1195,6 +1195,8 @@ export async function createTransferPlan(
   };
   const destinationBySourceUrl = new Map<string, string>();
   const planned: PlannedNode[] = [];
+  // Items that were renamed, and everything written inside them.
+  const inRenamedCopy = new Set<string>();
   // Parents before children, and referenced items before the content that
   // references them, so relations resolve. Siblings otherwise keep the source
   // order (the sort is stable); the executor restores it where references
@@ -1217,9 +1219,8 @@ export async function createTransferPlan(
   for (const node of orderedNodes) {
     const identity = getIdentity(node.content, node.sourceUrl);
     const parentSegments = node.segments.slice(0, -1);
-    const resolvedParent = destinationBySourceUrl.get(
-      appendPath(source.rootUrl, ...parentSegments).toString(),
-    );
+    const parentKey = appendPath(source.rootUrl, ...parentSegments).toString();
+    const resolvedParent = destinationBySourceUrl.get(parentKey);
     const destinationParentUrl = resolvedParent
       ? new URL(resolvedParent)
       : appendPath(destinationUrl, ...parentSegments);
@@ -1239,13 +1240,26 @@ export async function createTransferPlan(
     let newUid = false;
 
     if (!existing) {
-      await assertUidAvailable(
-        destination.rootUrl,
-        destinationItemUrl,
-        identity.uid,
-        input.destinationAuth,
-        fetchImpl,
-      );
+      if (inRenamedCopy.has(parentKey)) {
+        // Inside a renamed copy, as when a folder is beamed again with "keep
+        // both": a UUID the first copy already holds goes to the new copy
+        // as a new one.
+        newUid = await isUidTaken(
+          destination.rootUrl,
+          identity.uid,
+          input.destinationAuth,
+          fetchImpl,
+        );
+        inRenamedCopy.add(node.sourceUrl.toString());
+      } else {
+        await assertUidAvailable(
+          destination.rootUrl,
+          destinationItemUrl,
+          identity.uid,
+          input.destinationAuth,
+          fetchImpl,
+        );
+      }
       status = 'create';
     } else if (node.kind === 'placeholder') {
       if (existing.is_folderish !== true) {
@@ -1291,6 +1305,7 @@ export async function createTransferPlan(
         fetchImpl,
       );
       status = 'rename';
+      inRenamedCopy.add(node.sourceUrl.toString());
     } else {
       throw node.strictConflict
         ? new TransferError(
@@ -1347,8 +1362,8 @@ export async function createTransferPlan(
         payload.id = decodeURIComponent(
           item.destinationItemUrl.pathname.split('/').at(-1) as string,
         );
-        if (item.newUid) delete payload.UID;
       }
+      if (item.newUid) delete payload.UID;
       if (status === 'update') {
         // The existing item keeps its type, id and UUID.
         delete payload['@type'];

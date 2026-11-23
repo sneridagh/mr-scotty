@@ -883,6 +883,59 @@ describe('folder transfers', () => {
     ).toEqual([]);
   });
 
+  test('gives a renamed copy new UUIDs where the first copy holds them', async () => {
+    // The folder was beamed before: its path and every UUID are taken.
+    const fetchImpl = folderFetch();
+    const answer = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const path = canonicalRequestPath(url);
+      if (url.origin === 'https://new.example') {
+        if (
+          (init?.method || 'GET') === 'GET' &&
+          path === '/Plone/archive/news'
+        ) {
+          return json({ ...news, '@id': url.toString() });
+        }
+        if (
+          (init?.method || 'GET') === 'GET' &&
+          path === '/Plone/archive/news/launch'
+        ) {
+          return json({ ...launch, '@id': url.toString() });
+        }
+        if (path.endsWith('/@search')) {
+          return json({ items: [{ '@id': 'taken' }], items_total: 1 });
+        }
+      }
+      return answer(resource, init);
+    });
+
+    const plan = await createTransferPlan(
+      { ...input, includeChildren: true, conflictPolicy: 'rename' },
+      fetchImpl as typeof fetch,
+    );
+    const byPath = Object.fromEntries(
+      plan.operations.map((operation) => [
+        operation.destinationUrl.replace(
+          'https://new.example/Plone/archive',
+          '',
+        ),
+        operation,
+      ]),
+    );
+    expect(byPath['/news'].status).toBe('reuse');
+    expect(byPath['/news/launch-1'].status).toBe('rename');
+    expect(byPath['/news/launch-1'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/a'].status).toBe('create');
+    expect(byPath['/news/launch-1/a'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/b'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/b'].payload).toMatchObject({
+      blocks: {
+        img: { url: 'https://new.example/Plone/archive/news/launch-1/a' },
+      },
+    });
+  });
+
   test('refuses a folder with more items than allowed', async () => {
     await expect(
       createTransferPlan(
