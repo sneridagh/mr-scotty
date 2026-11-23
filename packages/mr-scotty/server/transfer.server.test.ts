@@ -654,6 +654,111 @@ describe('executeTransferPlan', () => {
   });
 });
 
+describe('workflow state', () => {
+  /**
+   * A destination with a small workflow: `transitions[state]` lists the
+   * transitions available in each state and where they lead.
+   */
+  function workflowFetch(
+    sourceState: string,
+    transitions: Record<string, Record<string, string>>,
+  ) {
+    const states = new Map<string, string>();
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      const path = canonicalRequestPath(url);
+      if (url.origin === 'https://old.example' && path.endsWith('/launch')) {
+        return json({ ...launch, review_state: sourceState });
+      }
+      const workflow = path.match(/^(.*)\/@workflow(?:\/([^/]+))?$/);
+      if (workflow) {
+        const [, item, transition] = workflow;
+        const state = states.get(item) ?? 'private';
+        if (method === 'POST') {
+          const next = transitions[state]?.[transition];
+          if (!next) return json({ error: { message: 'Invalid' } }, 400);
+          states.set(item, next);
+          return json({ review_state: next });
+        }
+        return json({
+          state: { id: state, title: state },
+          transitions: Object.keys(transitions[state] ?? {}).map((id) => ({
+            '@id': `${url.origin}${item}/@workflow/${id}`,
+            title: id,
+          })),
+        });
+      }
+      return successfulFetch()(resource, init);
+    });
+    return { fetchImpl, states };
+  }
+
+  const simplePublication = {
+    private: { publish: 'published', submit: 'pending' },
+    pending: { publish: 'published', reject: 'private' },
+    published: { retract: 'private' },
+  };
+
+  async function beam(fetchImpl: ReturnType<typeof vi.fn>) {
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    return executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+  }
+
+  test('moves a written item to its source state', async () => {
+    const { fetchImpl, states } = workflowFetch('published', simplePublication);
+    const report = await beam(fetchImpl);
+
+    expect(states.get('/Plone/archive/news/launch')).toBe('published');
+    expect(report.warnings).toEqual([]);
+  });
+
+  test('takes more than one transition when it has to', async () => {
+    const { fetchImpl, states } = workflowFetch('published', {
+      private: { submit: 'pending' },
+      pending: { publish: 'published' },
+    });
+    const report = await beam(fetchImpl);
+
+    expect(states.get('/Plone/archive/news/launch')).toBe('published');
+    expect(report.warnings).toEqual([]);
+  });
+
+  test('leaves an item private when its source is private', async () => {
+    const { fetchImpl } = workflowFetch('private', simplePublication);
+    const report = await beam(fetchImpl);
+
+    const transitions = fetchImpl.mock.calls.filter(
+      ([resource, init]) =>
+        init?.method === 'POST' && String(resource).includes('/@workflow/'),
+    );
+    expect(transitions).toEqual([]);
+    expect(report.warnings).toEqual([]);
+  });
+
+  test('warns, without failing, when the state cannot be reached', async () => {
+    const { fetchImpl, states } = workflowFetch('archived', simplePublication);
+    const report = await beam(fetchImpl);
+
+    expect(report.failed).toBeUndefined();
+    expect(report.created).toHaveLength(2);
+    expect(states.get('/Plone/archive/news/launch') ?? 'private').toBe(
+      'private',
+    );
+    expect(report.warnings).toEqual([
+      expect.objectContaining({
+        destinationUrl: 'https://new.example/Plone/archive/news/launch',
+        code: 'workflow_unreachable',
+      }),
+    ]);
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {

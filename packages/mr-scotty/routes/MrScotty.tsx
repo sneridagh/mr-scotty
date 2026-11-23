@@ -610,8 +610,11 @@ function PlanReview({
                   </span>
                 </Cell>
                 <Cell>
-                  <span className="text-quanta-iron">
+                  <span className="flex flex-col text-quanta-iron">
                     {operationType(plan, operation)}
+                    {operation.reviewState && (
+                      <span className="text-xs">{operation.reviewState}</span>
+                    )}
                   </span>
                 </Cell>
                 <Cell>
@@ -645,6 +648,17 @@ function PlanReview({
             under a new id because{' '}
             {renames === 1 ? 'its path is' : 'their paths are'} taken.
           </Callout>
+        )}
+        {!transferReport &&
+          plan.operations.some((operation) => operation.reviewState) && (
+            <Callout tone="neutral">
+              Written items are moved to their source workflow state, shown
+              under their type. Creation and modification dates are set by the
+              destination: the REST API does not accept them.
+            </Callout>
+          )}
+        {transferReport && transferReport.warnings.length > 0 && (
+          <WorkflowWarnings warnings={transferReport.warnings} />
         )}
         {replacements > 0 && !transferReport && (
           <Callout tone="warning">
@@ -684,6 +698,30 @@ function PlanReview({
         )}
       </div>
     </section>
+  );
+}
+
+function WorkflowWarnings({
+  warnings,
+}: {
+  warnings: TransferReport['warnings'];
+}) {
+  return (
+    <Callout tone="warning">
+      <span className="font-semibold">
+        {plural(warnings.length, 'item')} kept a different workflow state.
+      </span>
+      <ul className="mt-1 flex flex-col gap-1 text-xs">
+        {warnings.map((warning) => (
+          <li key={warning.destinationUrl}>
+            <span className="font-mono break-all">
+              {warning.destinationUrl}
+            </span>
+            : {warning.message}
+          </li>
+        ))}
+      </ul>
+    </Callout>
   );
 }
 
@@ -781,6 +819,11 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
           <p className="mt-2 text-xs text-quanta-candy">
             Stopped at {failed.destinationUrl}: {failed.message}
           </p>
+        )}
+        {result.report.warnings.length > 0 && (
+          <div className="mt-3">
+            <WorkflowWarnings warnings={result.report.warnings} />
+          </div>
         )}
       </JobCard>
     );

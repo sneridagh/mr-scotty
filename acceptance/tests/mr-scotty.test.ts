@@ -195,6 +195,17 @@ test.describe('Mr. Scotty', () => {
     };
     expect(destinationBlocks.image.url).toBe(`${destinationApiURL}/${imageId}`);
 
+    // Each item arrives in its source workflow state, with its publication
+    // date: the published document is published, the private image private.
+    expect(sourceDocument.review_state).toBe('published');
+    expect(destinationDocument.review_state).toBe('published');
+    // Plone stores the publication date to the minute.
+    expect(String(destinationDocument.effective).slice(0, 16)).toBe(
+      String(sourceDocument.effective).slice(0, 16),
+    );
+    expect(destinationImage.review_state).toBe(sourceImage.review_state);
+    expect(destinationDocument.creators).toEqual(sourceDocument.creators);
+
     const destinationImageField = destinationImage.image as {
       download?: string;
     };

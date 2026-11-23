@@ -65,6 +65,11 @@ export interface TransferOperation {
   status: 'create' | 'reuse' | 'replace' | 'skip' | 'update' | 'rename';
   /** For `rename`: the taken URL the item was moved away from. */
   renamedFrom?: string;
+  /**
+   * The source's workflow state, which a written item is moved to with
+   * workflow transitions once it exists.
+   */
+  reviewState?: string;
   payload?: Record<string, unknown>;
 }
 
@@ -102,6 +107,15 @@ export interface TransferReport {
   }>;
   reused: string[];
   skipped: string[];
+  /**
+   * Items that were written but could not be moved to their source workflow
+   * state. They stay in the state they reached; the transfer carries on.
+   */
+  warnings: Array<{
+    destinationUrl: string;
+    code: string;
+    message: string;
+  }>;
   /**
    * Set when an operation failed mid-run. Everything in `created`, `replaced`
    * and `updated` happened before it; renamed items are in `created`; nothing after it was attempted. `restored` reports
@@ -861,6 +875,13 @@ function placeholderPayload(content: ContentRecord, sourceUrl: URL) {
     id: identity.id,
     title: identity.title,
     UID: identity.uid,
+    // The source's publication dates, so publishing keeps them.
+    ...(typeof content.effective === 'string'
+      ? { effective: content.effective }
+      : {}),
+    ...(typeof content.expires === 'string'
+      ? { expires: content.expires }
+      : {}),
   };
 }
 
@@ -1231,6 +1252,9 @@ export async function createTransferPlan(
       kind: node.kind,
       status,
       ...(item.renamedFrom ? { renamedFrom: item.renamedFrom } : {}),
+      ...(payload && typeof node.content.review_state === 'string'
+        ? { reviewState: node.content.review_state }
+        : {}),
       payload,
     });
   }
@@ -1252,6 +1276,92 @@ export async function createTransferPlan(
   };
 }
 
+/**
+ * Transitions known to lead to a workflow state in Plone's stock workflows
+ * (simple publication, intranet, folder and one-state workflows). Plone's
+ * REST API lists the transitions available on an item, but not where they
+ * lead, so the target state picks the candidates.
+ */
+const TRANSITIONS_TO_STATE: Record<string, string[]> = {
+  published: ['publish', 'publish_externally'],
+  pending: ['submit'],
+  private: ['make_private', 'retract', 'reject', 'hide'],
+  visible: ['show', 'retract'],
+  internal: ['retract', 'hide', 'make_private'],
+  internally_published: ['publish_internally'],
+  external: ['publish_externally'],
+};
+
+/** At most this many transitions are tried to reach a state. */
+const MAX_TRANSITIONS = 4;
+
+/**
+ * Moves an item to `target` with workflow transitions. Returns a warning when
+ * the state cannot be reached; a workflow problem never fails the transfer.
+ */
+async function alignReviewState(
+  contentUrl: URL,
+  target: string,
+  destinationRoot: URL,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<TransferReport['warnings'][number] | undefined> {
+  const tried = new Set<string>();
+  let state: string | undefined;
+  try {
+    for (let step = 0; step <= MAX_TRANSITIONS; step += 1) {
+      const workflow = await requestJson(
+        apiUrlAtRoot(contentUrl, destinationRoot, '@workflow'),
+        auth,
+        fetchImpl,
+      );
+      state = isRecord(workflow.state) ? String(workflow.state.id) : undefined;
+      if (state === target) return undefined;
+      if (step === MAX_TRANSITIONS) break;
+
+      const available = (
+        Array.isArray(workflow.transitions) ? workflow.transitions : []
+      )
+        .map((transition) =>
+          isRecord(transition) ? String(transition['@id']) : '',
+        )
+        .map((id) => id.split('/').at(-1) as string)
+        .filter((id) => id && !tried.has(id));
+      // A known transition to the target first. For a known target,
+      // submitting often opens the way, as from private to pending to
+      // published. An unknown target leaves the item alone.
+      const candidates = TRANSITIONS_TO_STATE[target];
+      const next = candidates
+        ? (candidates.find((id) => available.includes(id)) ??
+          (available.includes('submit') ? 'submit' : undefined))
+        : undefined;
+      if (!next) break;
+      tried.add(next);
+      await requestJson(
+        apiUrlAtRoot(contentUrl, destinationRoot, '@workflow', next),
+        auth,
+        fetchImpl,
+        { method: 'POST', body: '{}' },
+      );
+    }
+  } catch (error) {
+    return {
+      destinationUrl: contentUrl.toString(),
+      code: 'workflow_failed',
+      message: `Could not set the workflow state to "${target}": ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  return {
+    destinationUrl: contentUrl.toString(),
+    code: 'workflow_unreachable',
+    message: `The destination workflow has no way to "${target}"${
+      state ? ` from "${state}"` : ''
+    }; the item is left ${state ? `"${state}"` : 'as it is'}.`,
+  };
+}
+
 export async function executeTransferPlan(
   plan: TransferPlan,
   destinationAuth: EndpointAuth,
@@ -1266,6 +1376,7 @@ export async function executeTransferPlan(
     updated: [],
     reused: [],
     skipped: [],
+    warnings: [],
     destinationUrl:
       selectedOperation?.destinationUrl ||
       plan.operations.at(-1)?.destinationUrl ||
@@ -1273,6 +1384,18 @@ export async function executeTransferPlan(
   };
 
   const destinationRoot = new URL(plan.destinationRootUrl);
+
+  const alignState = async (operation: TransferOperation) => {
+    if (!operation.reviewState) return;
+    const warning = await alignReviewState(
+      new URL(operation.destinationUrl),
+      operation.reviewState,
+      destinationRoot,
+      destinationAuth,
+      fetchImpl,
+    );
+    if (warning) report.warnings.push(warning);
+  };
 
   const reportItem = (operation: TransferOperation) => ({
     sourceUrl: operation.sourceUrl,
@@ -1340,6 +1463,7 @@ export async function executeTransferPlan(
         return report;
       }
       report.updated.push(reportItem(operation));
+      await alignState(operation);
       continue;
     }
 
@@ -1394,6 +1518,7 @@ export async function executeTransferPlan(
         return report;
       }
       report.replaced.push(reportItem(operation));
+      await alignState(operation);
       continue;
     }
 
@@ -1404,6 +1529,7 @@ export async function executeTransferPlan(
       return report;
     }
     report.created.push(reportItem(operation));
+    await alignState(operation);
   }
 
   return report;
