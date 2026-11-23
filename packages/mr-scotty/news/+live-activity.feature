@@ -1,0 +1,1 @@
+Transfers now run as background jobs on the Aurora server. The Activity tab shows them live, with a progress bar and the item being written, can cancel a running transfer, and keeps the history of the last 50 runs until the server restarts. @sneridagh

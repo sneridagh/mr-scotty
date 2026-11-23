@@ -952,6 +952,54 @@ describe('folder transfers', () => {
   });
 });
 
+describe('progress and cancellation', () => {
+  test('reports progress before each item and when it ends', async () => {
+    const fetchImpl = successfulFetch();
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    const progress: Array<[number, number, string | undefined]> = [];
+
+    await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+      {
+        onProgress: ({ done, total, current }) =>
+          progress.push([done, total, current?.destinationUrl]),
+      },
+    );
+
+    expect(progress).toEqual([
+      [0, 2, 'https://new.example/Plone/archive/news'],
+      [1, 2, 'https://new.example/Plone/archive/news/launch'],
+      [2, 2, undefined],
+    ]);
+  });
+
+  test('stops between items when cancelled', async () => {
+    const fetchImpl = successfulFetch();
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    const controller = new AbortController();
+
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+      {
+        signal: controller.signal,
+        // Cancel while the first item is being written.
+        onProgress: ({ done }) => {
+          if (done === 0) controller.abort();
+        },
+      },
+    );
+
+    expect(report.cancelled).toBe(true);
+    expect(report.created.map((item) => item.destinationUrl)).toEqual([
+      'https://new.example/Plone/archive/news',
+    ]);
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {

@@ -30,5 +30,16 @@ export default function install(config: ConfigType) {
     ],
   });
 
+  // Live job updates for the Activity tab, as server-sent events. A resource
+  // route: it has no component and no layout.
+  config.registerRoute({
+    type: 'route',
+    path: '/@@controlpanel/mr-scotty/events',
+    file: 'mr-scotty/routes/MrScottyEvents.ts',
+    options: {
+      id: 'mr-scotty-events',
+    },
+  });
+
   return config;
 }
