@@ -32,6 +32,10 @@ The browser only starts jobs and observes their state.
     Children and image references follow the new id.
   - `replace` deletes the existing item and recreates it, after a confirmation.
   Structural parents are always reused, and a referenced image already at its path with the same UUID is reused under `fail`, `skip`, and `rename`.
+- With **Include everything inside**, Mr. Scotty also beams everything inside the selected item, folder by folder, as the source connection can see it: read anonymously, private items are left out.
+  Each folder's children are read a page at a time, in their order, and the destination folder ends up in the same order.
+  Referenced items are written before the content that references them, so relations resolve; the folders are then put back in source order.
+  One transfer includes at most `MR_SCOTTY_MAX_ITEMS` items (500 by default), counting structural parents and referenced images; a larger folder is refused during preflight.
 - Every item Mr. Scotty writes, structural parents included, is moved to its source workflow state with workflow transitions.
   Plone's REST API lists an item's transitions but not where they lead, so Mr. Scotty picks them by target state from Plone's stock workflows (`publish`, `submit`, `retract`, …), taking up to four steps.
   When the destination workflow cannot reach the state, the item stays where it got to and the report carries a warning; the transfer goes on.
@@ -72,6 +76,8 @@ environment so local development and acceptance tests keep working unconfigured:
   and destination hosts must match one of its entries exactly.
 - `MR_SCOTTY_BLOCK_PRIVATE_NETWORK` — when truthy, refuses loopback, private,
   and link-local hosts (including the cloud metadata address).
+- `MR_SCOTTY_MAX_ITEMS` — the most items one transfer may include (500 by
+  default).
 
 A destructive `replace` captures the existing content before deleting it and
 restores it best-effort if the recreate fails; when an operation fails mid-run,
@@ -90,9 +96,9 @@ Image and file fields use the standard `download` metadata and base64 upload sha
 TODO:
 
 - Recreate non-image relations in a second pass and rewrite internal links.
-- Preserve creation and modification dates (needs a backend endpoint), ownership, ordering, aliases, translations, local roles, and sharing.
+- Preserve creation and modification dates (needs a backend endpoint), ownership, aliases, translations, local roles, and sharing.
 - Add content-type mapping and project-specific transformer registration.
-- Add querystring preview and bulk dependency planning.
+- Add querystring preview.
 - Add persistent jobs, SSE progress, cancellation, retry, and restart recovery.
 - Transfer external image URLs and images embedded in rich-text HTML.
 - Add production resource limits, DNS rebinding protection, and saved

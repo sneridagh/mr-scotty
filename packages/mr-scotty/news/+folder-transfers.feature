@@ -1,0 +1,1 @@
+Added **Include everything inside** to beam a whole folder: Mr. Scotty walks it folder by folder, keeps the source order, and applies the conflict policy and workflow state to every item. A transfer includes at most `MR_SCOTTY_MAX_ITEMS` items (500 by default). @sneridagh

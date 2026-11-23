@@ -4,6 +4,7 @@ import {
   createContentPayload,
   createTransferPlan,
   executeTransferPlan,
+  readMaxItemsFromEnv,
   readSsrfPolicyFromEnv,
   TransferError,
   type TransferInput,
@@ -756,6 +757,198 @@ describe('workflow state', () => {
         code: 'workflow_unreachable',
       }),
     ]);
+  });
+});
+
+describe('folder transfers', () => {
+  const base = 'https://old.example/Plone/news/launch';
+  const child = (id: string, extra: Record<string, unknown> = {}) => ({
+    '@id': `${base}/${id}`,
+    '@type': 'Document',
+    UID: `${id}-uid`,
+    id,
+    title: id.toUpperCase(),
+    is_folderish: false,
+    '@components': { navroot: { navroot: sourceRoot } },
+    ...extra,
+  });
+  // `b` shows an image block pointing at its later sibling `a`.
+  const children: Record<string, Record<string, unknown>> = {
+    b: child('b', {
+      blocks: { img: { '@type': 'image', url: `${base}/a` } },
+      blocks_layout: { items: ['img'] },
+    }),
+    a: child('a'),
+  };
+
+  function folderFetch(order = ['b', 'a']) {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      const path = canonicalRequestPath(url);
+      if (method === 'PATCH') return new Response(null, { status: 204 });
+      if (url.origin === 'https://old.example') {
+        if (path === '/Plone/news/launch') {
+          return json({
+            ...launch,
+            is_folderish: true,
+            items: order.map((id) => ({ '@id': `${base}/${id}` })),
+            items_total: order.length,
+          });
+        }
+        const id = path.split('/').at(-1) as string;
+        if (path.startsWith('/Plone/news/launch/') && children[id]) {
+          return json(children[id]);
+        }
+      }
+      return successfulFetch()(resource, init);
+    });
+    return fetchImpl;
+  }
+
+  test('plans everything inside the selected item', async () => {
+    const plan = await createTransferPlan(
+      { ...input, includeChildren: true },
+      folderFetch() as typeof fetch,
+    );
+    expect(plan.includeChildren).toBe(true);
+    expect(
+      plan.operations.map((operation) =>
+        operation.destinationUrl.replace(
+          'https://new.example/Plone/archive',
+          '',
+        ),
+      ),
+    ).toEqual([
+      '/news',
+      '/news/launch',
+      // The referenced `a` is written before `b`, which points at it.
+      '/news/launch/a',
+      '/news/launch/b',
+    ]);
+    expect(plan.operations.at(-1)?.payload).toMatchObject({
+      blocks: {
+        img: { url: 'https://new.example/Plone/archive/news/launch/a' },
+      },
+    });
+  });
+
+  test('leaves the children out unless asked', async () => {
+    const plan = await createTransferPlan(input, folderFetch() as typeof fetch);
+    expect(plan.operations).toHaveLength(2);
+  });
+
+  test('puts the written children back in their source order', async () => {
+    const fetchImpl = folderFetch();
+    const plan = await createTransferPlan(
+      { ...input, includeChildren: true },
+      fetchImpl as typeof fetch,
+    );
+    fetchImpl.mockClear();
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+
+    const moves = fetchImpl.mock.calls
+      .filter(([, init]) => init?.method === 'PATCH')
+      .map(([resource, init]) => [
+        String(resource),
+        JSON.parse(String(init?.body)).ordering.obj_id,
+      ]);
+    const folder = 'https://new.example/Plone/++api++/archive/news/launch';
+    expect(moves).toEqual([
+      [folder, 'b'],
+      [folder, 'a'],
+    ]);
+    expect(report.created).toHaveLength(4);
+  });
+
+  test('does not reorder children that were written in order', async () => {
+    const fetchImpl = folderFetch(['a', 'b']);
+    const plan = await createTransferPlan(
+      { ...input, includeChildren: true },
+      fetchImpl as typeof fetch,
+    );
+    fetchImpl.mockClear();
+    await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH'),
+    ).toEqual([]);
+  });
+
+  test('gives a renamed copy new UUIDs where the first copy holds them', async () => {
+    // The folder was beamed before: its path and every UUID are taken.
+    const fetchImpl = folderFetch();
+    const answer = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const path = canonicalRequestPath(url);
+      if (url.origin === 'https://new.example') {
+        if (
+          (init?.method || 'GET') === 'GET' &&
+          path === '/Plone/archive/news'
+        ) {
+          return json({ ...news, '@id': url.toString() });
+        }
+        if (
+          (init?.method || 'GET') === 'GET' &&
+          path === '/Plone/archive/news/launch'
+        ) {
+          return json({ ...launch, '@id': url.toString() });
+        }
+        if (path.endsWith('/@search')) {
+          return json({ items: [{ '@id': 'taken' }], items_total: 1 });
+        }
+      }
+      return answer(resource, init);
+    });
+
+    const plan = await createTransferPlan(
+      { ...input, includeChildren: true, conflictPolicy: 'rename' },
+      fetchImpl as typeof fetch,
+    );
+    const byPath = Object.fromEntries(
+      plan.operations.map((operation) => [
+        operation.destinationUrl.replace(
+          'https://new.example/Plone/archive',
+          '',
+        ),
+        operation,
+      ]),
+    );
+    expect(byPath['/news'].status).toBe('reuse');
+    expect(byPath['/news/launch-1'].status).toBe('rename');
+    expect(byPath['/news/launch-1'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/a'].status).toBe('create');
+    expect(byPath['/news/launch-1/a'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/b'].payload).not.toHaveProperty('UID');
+    expect(byPath['/news/launch-1/b'].payload).toMatchObject({
+      blocks: {
+        img: { url: 'https://new.example/Plone/archive/news/launch-1/a' },
+      },
+    });
+  });
+
+  test('refuses a folder with more items than allowed', async () => {
+    await expect(
+      createTransferPlan(
+        { ...input, includeChildren: true, maxItems: 3 },
+        folderFetch() as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'too_many_items', status: 413 });
+  });
+
+  test('reads the item limit from the environment', () => {
+    expect(readMaxItemsFromEnv({})).toBe(500);
+    expect(readMaxItemsFromEnv({ MR_SCOTTY_MAX_ITEMS: '50' })).toBe(50);
+    expect(readMaxItemsFromEnv({ MR_SCOTTY_MAX_ITEMS: 'lots' })).toBe(500);
   });
 });
 
