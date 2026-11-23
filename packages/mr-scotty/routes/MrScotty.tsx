@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Button,
   Cell,
+  Checkbox,
   Column,
   Container,
   Heading,
@@ -50,6 +51,7 @@ const FORM_ID = 'mr-scotty-transfer';
 import {
   createTransferPlan,
   executeTransferPlan,
+  readMaxItemsFromEnv,
   TransferError,
   type ConflictPolicy,
   type EndpointAuth,
@@ -116,6 +118,7 @@ type SubmittedForm = {
   sourceUrl: string;
   destinationUrl: string;
   conflictPolicy: ConflictPolicy;
+  includeChildren: boolean;
 };
 
 type ActionResult =
@@ -156,7 +159,10 @@ async function requireManager(request: Request): Promise<string> {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   await requireManager(request);
-  return { destinationUrl: config.settings.apiPath };
+  return {
+    destinationUrl: config.settings.apiPath,
+    maxItems: readMaxItemsFromEnv(),
+  };
 }
 
 function requiredString(formData: FormData, name: string): string {
@@ -253,14 +259,16 @@ export async function action({ request }: ActionFunctionArgs) {
         `Unknown conflict policy: ${String(submittedPolicy)}.`,
       );
     }
+    const includeChildren = formData.get('includeChildren') === 'true';
     const input = {
       sourceUrl,
       destinationUrl,
       sourceAuth: endpointAuth(formData, 'source'),
       destinationAuth,
       conflictPolicy,
+      includeChildren,
     };
-    const form = { sourceUrl, destinationUrl, conflictPolicy };
+    const form = { sourceUrl, destinationUrl, conflictPolicy, includeChildren };
     const intent = String(formData.get('intent') || 'preflight');
     const plan = await createTransferPlan(input);
 
@@ -576,7 +584,11 @@ function PlanReview({
       </div>
 
       <div className="px-6 pt-4">
-        <Table aria-label="Transfer plan operations" className="max-h-none">
+        <Table
+          aria-label="Transfer plan operations"
+          // Long plans scroll inside the table instead of stretching the page.
+          className={plan.operations.length > 12 ? 'max-h-112' : 'max-h-none'}
+        >
           <TableHeader>
             <Column isRowHeader defaultWidth="3fr" minWidth={240}>
               Destination path
@@ -842,13 +854,14 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
 
 export default function MrScotty() {
   const { t } = useTranslation();
-  const { destinationUrl } = useLoaderData<typeof loader>();
+  const { destinationUrl, maxItems } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>() as ActionResult | undefined;
   const navigation = useNavigation();
   const busy = navigation.state !== 'idle';
 
   const [tab, setTab] = useState<'new' | 'activity'>('new');
   const [policy, setPolicy] = useState<ConflictPolicy>('fail');
+  const [includeChildren, setIncludeChildren] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sourceUrlValue, setSourceUrlValue] = useState(
     result?.ok ? result.form.sourceUrl : '',
@@ -859,6 +872,7 @@ export default function MrScotty() {
   useEffect(() => {
     if (!result?.ok) return;
     setPolicy(result.form.conflictPolicy);
+    setIncludeChildren(result.form.includeChildren);
     setSourceUrlValue(result.form.sourceUrl);
     setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
@@ -917,6 +931,9 @@ export default function MrScotty() {
           >
             <Form id={FORM_ID} method="post" noValidate>
               <input type="hidden" name="conflictPolicy" value={policy} />
+              {includeChildren && (
+                <input type="hidden" name="includeChildren" value="true" />
+              )}
               <div className="flex flex-col gap-6">
                 <SectionCard
                   icon="source"
@@ -934,6 +951,14 @@ export default function MrScotty() {
                       onChange={setSourceUrlValue}
                       isRequired
                     />
+                    <Checkbox
+                      isSelected={includeChildren}
+                      onChange={setIncludeChildren}
+                      isDisabled={busy}
+                      description={`Beam the whole folder, keeping its order. A transfer includes at most ${maxItems} items.`}
+                    >
+                      Include everything inside
+                    </Checkbox>
                     <AuthenticationFields
                       prefix="source"
                       defaultMode="anonymous"

@@ -26,6 +26,16 @@ export interface TransferInput {
   conflictPolicy?: ConflictPolicy;
   /** @deprecated alias for `conflictPolicy: 'replace'`. */
   overwrite?: boolean;
+  /**
+   * Also beam everything inside the selected item, folder by folder, keeping
+   * the source order.
+   */
+  includeChildren?: boolean;
+  /**
+   * The most items a plan may write or check. Defaults to
+   * `MR_SCOTTY_MAX_ITEMS`, or 500.
+   */
+  maxItems?: number;
 }
 
 type ContentRecord = Record<string, unknown> & {
@@ -51,6 +61,8 @@ type SourceNode = {
   segments: string[];
   kind: TransferOperation['kind'];
   strictConflict: boolean;
+  /** For items inside the selected one: their place among their siblings. */
+  position?: number;
 };
 
 export interface TransferOperation {
@@ -63,6 +75,11 @@ export interface TransferOperation {
   type: string;
   kind: 'placeholder' | 'content';
   status: 'create' | 'reuse' | 'replace' | 'skip' | 'update' | 'rename';
+  /**
+   * For items inside the selected one: their place among their source
+   * siblings, which the destination folder is put back in.
+   */
+  position?: number;
   /** For `rename`: the taken URL the item was moved away from. */
   renamedFrom?: string;
   /**
@@ -81,6 +98,7 @@ export interface TransferPlan {
   sourceRelativePath: string;
   destinationPath: string;
   conflictPolicy: ConflictPolicy;
+  includeChildren: boolean;
   /** @deprecated use `conflictPolicy`; kept as `conflictPolicy === 'replace'`. */
   overwrite: boolean;
   operations: TransferOperation[];
@@ -934,6 +952,45 @@ async function findFreeDestinationUrl(
   );
 }
 
+const DEFAULT_MAX_ITEMS = 500;
+const CHILDREN_PAGE_SIZE = 100;
+
+/** The item limit from `MR_SCOTTY_MAX_ITEMS`, or 500. */
+export function readMaxItemsFromEnv(
+  env: Record<string, string | undefined> = currentEnv(),
+): number {
+  const value = Number(env.MR_SCOTTY_MAX_ITEMS);
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_ITEMS;
+}
+
+/** The children of a folder, in their order, a page at a time. */
+async function listChildren(
+  folderUrl: URL,
+  rootUrl: URL,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<URL[]> {
+  const children: URL[] = [];
+  for (let start = 0; ; start += CHILDREN_PAGE_SIZE) {
+    const pageUrl = apiUrlAtRoot(folderUrl, rootUrl);
+    pageUrl.searchParams.set('b_start', String(start));
+    pageUrl.searchParams.set('b_size', String(CHILDREN_PAGE_SIZE));
+    const page = await requestJson(pageUrl, auth, fetchImpl);
+    const items = Array.isArray(page.items) ? page.items : [];
+    for (const item of items) {
+      if (isRecord(item) && typeof item['@id'] === 'string') {
+        // Rebased to the folder's origin, without `++api++`.
+        children.push(rebaseApiUrl(item['@id'], folderUrl));
+      }
+    }
+    const total = Number(page.items_total ?? 0);
+    if (items.length < CHILDREN_PAGE_SIZE || start + items.length >= total) {
+      break;
+    }
+  }
+  return children;
+}
+
 export async function createTransferPlan(
   input: TransferInput,
   fetchImpl: Fetch = fetch,
@@ -981,6 +1038,7 @@ export async function createTransferPlan(
     content: ContentRecord,
     nodeKind: SourceNode['kind'],
     strictConflict = false,
+    position?: number,
   ) => {
     const key = sourceItemUrl.toString();
     const existing = sourceNodes.get(key);
@@ -997,6 +1055,7 @@ export async function createTransferPlan(
       segments: relativeSegments(source.rootUrl, sourceItemUrl),
       kind: nodeKind,
       strictConflict,
+      ...(position === undefined ? {} : { position }),
     });
   };
 
@@ -1021,7 +1080,48 @@ export async function createTransferPlan(
     );
   }
 
+  const maxItems = input.maxItems ?? readMaxItemsFromEnv();
   const pendingReferences = collectImageReferences(source.content, sourceUrl);
+  const includeChildren =
+    input.includeChildren === true && source.content.is_folderish === true;
+
+  if (includeChildren) {
+    // Walk the selected item folder by folder. Each folder lists its children
+    // in their order, which the destination keeps.
+    const folders = [appendPath(source.rootUrl, ...segments)];
+    let itemCount = segments.length;
+    while (folders.length > 0) {
+      const folderUrl = folders.shift() as URL;
+      const children = await listChildren(
+        folderUrl,
+        source.rootUrl,
+        input.sourceAuth,
+        fetchImpl,
+      );
+      itemCount += children.length;
+      if (itemCount > maxItems) {
+        throw new TransferError(
+          'too_many_items',
+          `${appendPath(source.rootUrl, ...segments)} holds more than ${maxItems} items, the most one transfer may include. Beam its folders one by one, or raise MR_SCOTTY_MAX_ITEMS.`,
+          413,
+        );
+      }
+      for (const [position, childUrl] of children.entries()) {
+        const childSegments = relativeSegments(source.rootUrl, childUrl);
+        const canonicalChildUrl = appendPath(source.rootUrl, ...childSegments);
+        const content = await requestJson(
+          apiUrlAtRoot(canonicalChildUrl, source.rootUrl),
+          input.sourceAuth,
+          fetchImpl,
+        );
+        addSourceNode(canonicalChildUrl, content, 'content', true, position);
+        pendingReferences.push(
+          ...collectImageReferences(content, canonicalChildUrl),
+        );
+        if (content.is_folderish === true) folders.push(canonicalChildUrl);
+      }
+    }
+  }
   const visitedReferences = new Set<string>();
 
   while (pendingReferences.length > 0) {
@@ -1095,11 +1195,24 @@ export async function createTransferPlan(
   };
   const destinationBySourceUrl = new Map<string, string>();
   const planned: PlannedNode[] = [];
+  // Parents before children, and referenced items before the content that
+  // references them, so relations resolve. Siblings otherwise keep the source
+  // order (the sort is stable); the executor restores it where references
+  // changed it.
   const orderedNodes = [...sourceNodes.values()].sort(
     (left, right) =>
       left.segments.length - right.segments.length ||
+      Number(!visitedReferences.has(left.sourceUrl.toString())) -
+        Number(!visitedReferences.has(right.sourceUrl.toString())) ||
       Number(left.strictConflict) - Number(right.strictConflict),
   );
+  if (orderedNodes.length > maxItems) {
+    throw new TransferError(
+      'too_many_items',
+      `The transfer would include ${orderedNodes.length} items, more than the ${maxItems} one transfer may include.`,
+      413,
+    );
+  }
 
   for (const node of orderedNodes) {
     const identity = getIdentity(node.content, node.sourceUrl);
@@ -1252,6 +1365,7 @@ export async function createTransferPlan(
       kind: node.kind,
       status,
       ...(item.renamedFrom ? { renamedFrom: item.renamedFrom } : {}),
+      ...(node.position === undefined ? {} : { position: node.position }),
       ...(payload && typeof node.content.review_state === 'string'
         ? { reviewState: node.content.review_state }
         : {}),
@@ -1271,6 +1385,7 @@ export async function createTransferPlan(
       ) ?? appendPath(destinationUrl, ...segments).toString(),
     ).pathname,
     conflictPolicy,
+    includeChildren,
     overwrite,
     operations,
   };
@@ -1386,6 +1501,7 @@ export async function executeTransferPlan(
   const destinationRoot = new URL(plan.destinationRootUrl);
 
   const alignState = async (operation: TransferOperation) => {
+    written.add(operation);
     if (!operation.reviewState) return;
     const warning = await alignReviewState(
       new URL(operation.destinationUrl),
@@ -1395,6 +1511,62 @@ export async function executeTransferPlan(
       fetchImpl,
     );
     if (warning) report.warnings.push(warning);
+  };
+
+  const written = new Set<TransferOperation>();
+
+  /**
+   * New items land at the bottom of their folder in the order they were
+   * written. Where that differs from the source order (referenced items are
+   * written first), move them to the bottom again in source order.
+   */
+  const restoreOrder = async () => {
+    const byParent = new Map<string, TransferOperation[]>();
+    for (const operation of plan.operations) {
+      if (operation.position === undefined || !written.has(operation)) continue;
+      const siblings = byParent.get(operation.destinationParentUrl) ?? [];
+      siblings.push(operation);
+      byParent.set(operation.destinationParentUrl, siblings);
+    }
+    for (const [parentUrl, siblings] of byParent) {
+      const sourceOrder = [...siblings].sort(
+        (left, right) => (left.position ?? 0) - (right.position ?? 0),
+      );
+      if (
+        sourceOrder.every((operation, index) => operation === siblings[index])
+      )
+        continue;
+      try {
+        for (const operation of sourceOrder) {
+          await requestJson(
+            apiUrlAtRoot(new URL(parentUrl), destinationRoot),
+            destinationAuth,
+            fetchImpl,
+            {
+              method: 'PATCH',
+              body: JSON.stringify({
+                ordering: {
+                  obj_id: decodeURIComponent(
+                    new URL(operation.destinationUrl).pathname
+                      .split('/')
+                      .at(-1) as string,
+                  ),
+                  delta: 'bottom',
+                },
+              }),
+            },
+          );
+        }
+      } catch (error) {
+        report.warnings.push({
+          destinationUrl: parentUrl,
+          code: 'ordering_failed',
+          message: `Could not put the items back in their source order: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      }
+    }
   };
 
   const reportItem = (operation: TransferOperation) => ({
@@ -1437,7 +1609,7 @@ export async function executeTransferPlan(
     };
   };
 
-  for (const operation of plan.operations) {
+  operations: for (const operation of plan.operations) {
     if (operation.status === 'reuse') {
       report.reused.push(operation.destinationUrl);
       continue;
@@ -1460,7 +1632,7 @@ export async function executeTransferPlan(
         );
       } catch (error) {
         recordFailure(operation, error);
-        return report;
+        break operations;
       }
       report.updated.push(reportItem(operation));
       await alignState(operation);
@@ -1498,7 +1670,7 @@ export async function executeTransferPlan(
       } catch (error) {
         // The original is still in place, so nothing to roll back.
         recordFailure(operation, error);
-        return report;
+        break operations;
       }
 
       try {
@@ -1515,7 +1687,7 @@ export async function executeTransferPlan(
           }
         }
         recordFailure(operation, error, restored);
-        return report;
+        break operations;
       }
       report.replaced.push(reportItem(operation));
       await alignState(operation);
@@ -1532,5 +1704,6 @@ export async function executeTransferPlan(
     await alignState(operation);
   }
 
+  await restoreOrder();
   return report;
 }

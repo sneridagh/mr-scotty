@@ -380,6 +380,96 @@ test.describe('Mr. Scotty', () => {
     expect(sibling.title).toBe('Unrelated destination sibling');
   });
 
+  test('beams a folder with everything inside, in its order', async ({
+    page,
+  }) => {
+    const sourceApiURL = getDefaultSourceApiURL();
+    const destinationApiURL = getDefaultApiURL();
+    const sourceAuth: RequestOptions = {
+      apiURL: sourceApiURL,
+      username: 'admin',
+      password: 'secret',
+    };
+    const folderId = `mr-scotty-folder-${Date.now()}`;
+    await createContent(
+      page,
+      {
+        contentType: 'Document',
+        contentId: folderId,
+        contentTitle: 'Folder',
+        transition: 'publish',
+      },
+      sourceAuth,
+    );
+    // Created in an order that is not alphabetical, one of them private.
+    const children = [
+      { id: 'charlie', transition: 'publish' },
+      { id: 'alpha', transition: undefined },
+      { id: 'bravo', transition: 'publish' },
+    ];
+    for (const child of children) {
+      await createContent(
+        page,
+        {
+          contentType: 'Document',
+          contentId: child.id,
+          contentTitle: child.id,
+          path: folderId,
+          ...(child.transition ? { transition: child.transition } : {}),
+        },
+        sourceAuth,
+      );
+    }
+
+    const { token } = await login(page);
+    await page.goto('/mr-scotty');
+    await waitForMrScottyHydration(page);
+    await typeSourceUrl(page, `${sourceApiURL}/${folderId}`);
+    // Signed in, so the private child is listed too; read anonymously, it
+    // would be left out.
+    await page
+      .getByRole('button', { name: /Connection/ })
+      .first()
+      .click();
+    await page.getByRole('option', { name: 'Username and password' }).click();
+    await page.getByLabel('Source username').fill('admin');
+    await page.getByLabel('Source password').fill('secret');
+    const includeChildren = page.getByRole('checkbox', {
+      name: 'Include everything inside',
+    });
+    await expect(async () => {
+      await page.getByText('Include everything inside').click();
+      await expect(includeChildren).toBeChecked();
+    }).toPass({ timeout: 10_000 });
+
+    await page.getByRole('button', { name: 'Inspect transfer' }).click();
+    await expect(page.getByText('Transfer plan')).toBeVisible();
+    await expect(page.getByRole('gridcell', { name: 'create' })).toHaveCount(4);
+
+    await page.getByRole('button', { name: 'Beam content' }).click();
+    await expectBeamed(page, `${sourceApiURL}/${folderId}`);
+
+    const folder = await getJson(
+      page,
+      apiContentURL(destinationApiURL, folderId),
+      bearerAuth(token),
+    );
+    const items = folder.items as Array<{
+      '@id': string;
+      review_state: string;
+    }>;
+    expect(items.map((item) => item['@id'].split('/').at(-1))).toEqual([
+      'charlie',
+      'alpha',
+      'bravo',
+    ]);
+    expect(items.map((item) => item.review_state)).toEqual([
+      'published',
+      'private',
+      'published',
+    ]);
+  });
+
   test.describe('conflict policies', () => {
     /**
      * A published source document and an unrelated destination document at
