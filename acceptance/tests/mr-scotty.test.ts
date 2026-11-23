@@ -61,6 +61,16 @@ async function expectBeamed(page: Page, sourceUrl: string) {
   ).toBeVisible();
 }
 
+async function selectConflictPolicy(page: Page, label: string) {
+  // The native radio input is visually hidden behind its styled card, so
+  // target the option's label text and confirm the selection took.
+  const radio = page.getByRole('radio', { name: new RegExp(label) });
+  await expect(async () => {
+    await page.getByText(label).click();
+    await expect(radio).toBeChecked();
+  }).toPass({ timeout: 10_000 });
+}
+
 async function getJson(
   page: Page,
   url: string,
@@ -357,5 +367,132 @@ test.describe('Mr. Scotty', () => {
     };
     expect(destinationBlocks.image.url).toBe(`${destinationApiURL}/${imageId}`);
     expect(sibling.title).toBe('Unrelated destination sibling');
+  });
+
+  test.describe('conflict policies', () => {
+    /**
+     * A published source document and an unrelated destination document at
+     * the same path, then a transfer with the chosen policy.
+     */
+    async function beamOverExisting(
+      page: Page,
+      policyLabel: string,
+      expectedStatus: string,
+    ) {
+      const sourceApiURL = getDefaultSourceApiURL();
+      const destinationApiURL = getDefaultApiURL();
+      const id = `mr-scotty-policy-${Date.now()}`;
+      await createContent(
+        page,
+        {
+          contentType: 'Document',
+          contentId: id,
+          contentTitle: 'Source version',
+          transition: 'publish',
+        },
+        { apiURL: sourceApiURL, username: 'admin', password: 'secret' },
+      );
+      await createContent(
+        page,
+        {
+          contentType: 'Document',
+          contentId: id,
+          contentTitle: 'Destination version',
+        },
+        { apiURL: destinationApiURL, username: 'admin', password: 'secret' },
+      );
+      const sourceDocument = await getJson(
+        page,
+        apiContentURL(sourceApiURL, id),
+        basicAuth('admin', 'secret'),
+      );
+      const { token } = await login(page);
+      const destinationHeaders = bearerAuth(token);
+      const before = await getJson(
+        page,
+        apiContentURL(destinationApiURL, id),
+        destinationHeaders,
+      );
+
+      await page.goto('/mr-scotty');
+      await waitForMrScottyHydration(page);
+      await typeSourceUrl(page, `${sourceApiURL}/${id}`);
+      await selectConflictPolicy(page, policyLabel);
+
+      await page.getByRole('button', { name: 'Inspect transfer' }).click();
+      await expect(page.getByText('Transfer plan')).toBeVisible();
+      await expect(
+        page.getByRole('gridcell', { name: expectedStatus }),
+      ).toBeVisible();
+
+      await page.getByRole('button', { name: 'Beam content' }).click();
+      await expectBeamed(page, `${sourceApiURL}/${id}`);
+
+      return {
+        id,
+        before,
+        sourceDocument,
+        destinationApiURL,
+        destinationHeaders,
+      };
+    }
+
+    test('skip leaves the existing item untouched', async ({ page }) => {
+      const { id, before, destinationApiURL, destinationHeaders } =
+        await beamOverExisting(page, 'Skip existing content', 'skip');
+
+      await expect(
+        page.getByRole('tabpanel').getByText('Skipped 1 item.'),
+      ).toBeVisible();
+      const after = await getJson(
+        page,
+        apiContentURL(destinationApiURL, id),
+        destinationHeaders,
+      );
+      expect(after.title).toBe('Destination version');
+      expect(after.UID).toBe(before.UID);
+    });
+
+    test('update writes the source fields into the existing item', async ({
+      page,
+    }) => {
+      const { id, before, destinationApiURL, destinationHeaders } =
+        await beamOverExisting(page, 'Update existing content', 'update');
+
+      const after = await getJson(
+        page,
+        apiContentURL(destinationApiURL, id),
+        destinationHeaders,
+      );
+      expect(after.title).toBe('Source version');
+      // Updated in place: the existing item keeps its UUID.
+      expect(after.UID).toBe(before.UID);
+    });
+
+    test('keep both beams the item under a free id', async ({ page }) => {
+      const {
+        id,
+        before,
+        sourceDocument,
+        destinationApiURL,
+        destinationHeaders,
+      } = await beamOverExisting(page, 'Keep both', 'rename');
+
+      const original = await getJson(
+        page,
+        apiContentURL(destinationApiURL, id),
+        destinationHeaders,
+      );
+      const copy = await getJson(
+        page,
+        apiContentURL(destinationApiURL, `${id}-1`),
+        destinationHeaders,
+      );
+      expect(original.title).toBe('Destination version');
+      expect(original.UID).toBe(before.UID);
+      expect(copy.title).toBe('Source version');
+      // The source UUID was free at the destination, so the copy keeps it.
+      expect(copy.UID).toBe(sourceDocument.UID);
+    });
   });
 });

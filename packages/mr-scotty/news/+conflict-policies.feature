@@ -1,0 +1,1 @@
+Added the skip, update and rename ("Keep both") conflict policies next to fail and replace, in the transfer engine and the Options card. The transfer plan shows the action chosen for each item, and the report counts updated and skipped items. @sneridagh

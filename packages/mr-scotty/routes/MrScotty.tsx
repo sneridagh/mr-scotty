@@ -51,18 +51,71 @@ import {
   createTransferPlan,
   executeTransferPlan,
   TransferError,
+  type ConflictPolicy,
   type EndpointAuth,
+  type TransferOperation,
   type TransferPlan,
   type TransferReport,
 } from '../server/transfer.server';
 import BeamIcon from '../components/BeamIcon';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
-type ConflictPolicy = 'fail' | 'replace';
+const CONFLICT_POLICIES: ReadonlyArray<{
+  value: ConflictPolicy;
+  label: string;
+  badge: string;
+  badgeClassName: string;
+  description: string;
+}> = [
+  {
+    value: 'fail',
+    label: 'Fail',
+    badge: 'safe',
+    badgeClassName: 'bg-quanta-mint text-quanta-turtle',
+    description:
+      'Abort before any write when the path or a UUID collides. The default.',
+  },
+  {
+    value: 'skip',
+    label: 'Skip existing content',
+    badge: 'safe',
+    badgeClassName: 'bg-quanta-mint text-quanta-turtle',
+    description:
+      'Leave items that are already there untouched and beam only what is missing.',
+  },
+  {
+    value: 'update',
+    label: 'Update existing content',
+    badge: 'in place',
+    badgeClassName: 'bg-quanta-cream text-quanta-bronze',
+    description:
+      'Write the source fields into the existing item. Its UUID, history and position are kept; the types must match.',
+  },
+  {
+    value: 'rename',
+    label: 'Keep both',
+    badge: 'new id',
+    badgeClassName: 'bg-quanta-arctic text-quanta-royal',
+    description:
+      'Beam the item next to the existing one under a free id, such as item-1. It gets a new UUID when the original holds it.',
+  },
+  {
+    value: 'replace',
+    label: 'Replace existing content',
+    badge: 'destructive',
+    badgeClassName: 'bg-quanta-ballet text-quanta-candy',
+    description:
+      'Delete the item at the source-relative path, then recreate it. Unrelated siblings and parents are preserved. Confirmed before it runs.',
+  },
+];
+
+function isConflictPolicy(value: unknown): value is ConflictPolicy {
+  return CONFLICT_POLICIES.some((policy) => policy.value === value);
+}
 type SubmittedForm = {
   sourceUrl: string;
   destinationUrl: string;
-  overwrite: boolean;
+  conflictPolicy: ConflictPolicy;
 };
 
 type ActionResult =
@@ -188,15 +241,26 @@ export async function action({ request }: ActionFunctionArgs) {
     const destinationAuth = endpointAuth(formData, 'destination', sessionToken);
     const sourceUrl = requiredString(formData, 'sourceUrl');
     const destinationUrl = requiredString(formData, 'destinationUrl');
-    const overwrite = formData.has('overwrite');
+    const submittedPolicy = formData.get('conflictPolicy');
+    let conflictPolicy: ConflictPolicy = formData.has('overwrite')
+      ? 'replace'
+      : 'fail';
+    if (isConflictPolicy(submittedPolicy)) {
+      conflictPolicy = submittedPolicy;
+    } else if (submittedPolicy !== null) {
+      throw new TransferError(
+        'invalid_conflict_policy',
+        `Unknown conflict policy: ${String(submittedPolicy)}.`,
+      );
+    }
     const input = {
       sourceUrl,
       destinationUrl,
       sourceAuth: endpointAuth(formData, 'source'),
       destinationAuth,
-      overwrite,
+      conflictPolicy,
     };
-    const form = { sourceUrl, destinationUrl, overwrite };
+    const form = { sourceUrl, destinationUrl, conflictPolicy };
     const intent = String(formData.get('intent') || 'preflight');
     const plan = await createTransferPlan(input);
 
@@ -362,18 +426,52 @@ function operationType(
   return operation.type;
 }
 
-const STATUS_TAG: Record<string, string> = {
+const STATUS_TAG: Record<TransferOperation['status'], string> = {
   create: 'bg-quanta-mint text-quanta-turtle',
   reuse: 'bg-quanta-snow text-quanta-pigeon',
+  skip: 'bg-quanta-snow text-quanta-pigeon',
+  update: 'bg-quanta-cream text-quanta-bronze',
+  rename: 'bg-quanta-arctic text-quanta-royal',
   replace: 'bg-quanta-ballet text-quanta-candy',
 };
 
-function StatusTag({ status }: { status: string }) {
+const STATUS_ORDER: TransferOperation['status'][] = [
+  'create',
+  'update',
+  'rename',
+  'replace',
+  'skip',
+  'reuse',
+];
+
+function plural(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/** "Created 2 items, updated 1 item and skipped 1 item." */
+function reportSummary(report: TransferReport): string {
+  const parts = [
+    ['created', report.created.length],
+    ['updated', report.updated.length],
+    ['replaced', report.replaced.length],
+    ['skipped', report.skipped.length],
+    ['reused', report.reused.length],
+  ] as const;
+  const done = parts
+    .filter(([, count]) => count > 0)
+    .map(([verb, count]) => `${verb} ${plural(count, 'item')}`);
+  if (done.length === 0) return 'Nothing was written.';
+  const sentence =
+    done.length === 1
+      ? done[0]
+      : `${done.slice(0, -1).join(', ')} and ${done.at(-1)}`;
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
+}
+
+function StatusTag({ status }: { status: TransferOperation['status'] }) {
   return (
     <span
-      className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold tracking-wide uppercase ${
-        STATUS_TAG[status] ?? 'bg-quanta-snow text-quanta-pigeon'
-      }`}
+      className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-semibold tracking-wide uppercase ${STATUS_TAG[status]}`}
     >
       {status}
     </span>
@@ -430,9 +528,11 @@ function PlanReview({
   result: Extract<ActionResult, { ok: true }>;
 }) {
   const { plan } = result;
-  const creates = plan.operations.filter((o) => o.status === 'create');
-  const reuses = plan.operations.filter((o) => o.status === 'reuse');
-  const replacements = plan.operations.filter((o) => o.status === 'replace');
+  const countOf = (status: TransferOperation['status']) =>
+    plan.operations.filter((o) => o.status === status).length;
+  const replacements = countOf('replace');
+  const updates = countOf('update');
+  const renames = countOf('rename');
   const dependencies = plan.operations.filter((o) => isDependency(plan, o));
   const transferReport =
     result.intent === 'transfer' ? result.report : undefined;
@@ -452,21 +552,16 @@ function PlanReview({
             : 'Transfer plan'}
         </h2>
         <div className="flex flex-wrap gap-2">
-          <StatPill
-            count={creates.length}
-            label="create"
-            className="bg-quanta-mint text-quanta-turtle"
-          />
-          <StatPill
-            count={replacements.length}
-            label="replace"
-            className="bg-quanta-ballet text-quanta-candy"
-          />
-          <StatPill
-            count={reuses.length}
-            label="reuse"
-            className="bg-quanta-snow text-quanta-pigeon"
-          />
+          {STATUS_ORDER.filter(
+            (status) => status === 'create' || countOf(status) > 0,
+          ).map((status) => (
+            <StatPill
+              key={status}
+              count={countOf(status)}
+              label={status}
+              className={STATUS_TAG[status]}
+            />
+          ))}
           {dependencies.length > 0 && (
             <StatPill
               count={dependencies.length}
@@ -504,7 +599,14 @@ function PlanReview({
                         className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
                       />
                     )}
-                    {operation.destinationUrl}
+                    <span className="flex flex-col">
+                      {operation.destinationUrl}
+                      {operation.renamedFrom && (
+                        <span className="font-sans text-xs text-quanta-iron">
+                          {operation.renamedFrom.split('/').at(-1)} is taken
+                        </span>
+                      )}
+                    </span>
                   </span>
                 </Cell>
                 <Cell>
@@ -530,7 +632,21 @@ function PlanReview({
             the block URLs are rewritten to the destination.
           </Callout>
         )}
-        {replacements.length > 0 && !transferReport && (
+        {updates > 0 && !transferReport && (
+          <Callout tone="info">
+            <b className="font-semibold">Update</b> writes the source fields
+            into {plural(updates, 'existing item')}. Their UUIDs and history are
+            kept, so earlier versions can be restored.
+          </Callout>
+        )}
+        {renames > 0 && !transferReport && (
+          <Callout tone="info">
+            {plural(renames, 'item')} {renames === 1 ? 'is' : 'are'} beamed
+            under a new id because{' '}
+            {renames === 1 ? 'its path is' : 'their paths are'} taken.
+          </Callout>
+        )}
+        {replacements > 0 && !transferReport && (
           <Callout tone="warning">
             <b className="font-semibold">Replace</b> deletes the existing item
             at its path before recreating it. You confirm this before anything
@@ -539,11 +655,7 @@ function PlanReview({
         )}
         {transferReport && !failed && (
           <p className="text-sm font-medium text-quanta-denim">
-            Created {transferReport.created.length} item
-            {transferReport.created.length === 1 ? '' : 's'} and replaced{' '}
-            {transferReport.replaced.length} item
-            {transferReport.replaced.length === 1 ? '' : 's'}. Final
-            destination:{' '}
+            {reportSummary(transferReport)} Final destination:{' '}
             <Link
               className="text-quanta-sapphire underline"
               href={transferReport.destinationUrl}
@@ -555,8 +667,7 @@ function PlanReview({
         {failed && transferReport && (
           <Callout tone="warning">
             <span className="font-semibold">Stopped before finishing.</span>{' '}
-            Created {transferReport.created.length}, replaced{' '}
-            {transferReport.replaced.length} before{' '}
+            {reportSummary(transferReport)} Then{' '}
             <span className="font-mono break-all">{failed.destinationUrl}</span>{' '}
             failed: {failed.message}
             {failed.restored !== undefined && (
@@ -658,8 +769,7 @@ function ActivityPanel({ result }: { result: ActionResult | undefined }) {
           {result.form.sourceUrl} → {result.report.destinationUrl}
         </p>
         <p className="mt-2 text-sm text-quanta-pigeon">
-          Created {result.report.created.length}, replaced{' '}
-          {result.report.replaced.length}, reused {result.report.reused.length}.{' '}
+          {reportSummary(result.report)}{' '}
           <Link
             className="text-quanta-sapphire underline"
             href={result.report.destinationUrl}
@@ -705,7 +815,7 @@ export default function MrScotty() {
 
   useEffect(() => {
     if (!result?.ok) return;
-    setPolicy(result.form.overwrite ? 'replace' : 'fail');
+    setPolicy(result.form.conflictPolicy);
     setSourceUrlValue(result.form.sourceUrl);
     setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
@@ -763,9 +873,7 @@ export default function MrScotty() {
             className="flex flex-col gap-6 p-0 inert:hidden"
           >
             <Form id={FORM_ID} method="post" noValidate>
-              {policy === 'replace' && (
-                <input type="hidden" name="overwrite" value="true" />
-              )}
+              <input type="hidden" name="conflictPolicy" value={policy} />
               <div className="flex flex-col gap-6">
                 <SectionCard
                   icon="source"
@@ -838,53 +946,33 @@ export default function MrScotty() {
                     isDisabled={busy}
                     className="w-full"
                   >
-                    <Radio
-                      value="fail"
-                      className={({ isSelected }: { isSelected: boolean }) =>
-                        `w-full items-start rounded-lg border p-3 ${
-                          isSelected
-                            ? 'border-quanta-sapphire bg-quanta-azure/10'
-                            : 'border-quanta-smoke'
-                        }`
-                      }
-                    >
-                      <span className="flex flex-col">
-                        <span className="flex items-center gap-2 font-medium text-quanta-denim">
-                          Fail
-                          <span className="rounded bg-quanta-mint px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-turtle uppercase">
-                            safe
+                    {CONFLICT_POLICIES.map((option) => (
+                      <Radio
+                        key={option.value}
+                        value={option.value}
+                        className={({ isSelected }: { isSelected: boolean }) =>
+                          `w-full items-start rounded-lg border p-3 ${
+                            isSelected
+                              ? 'border-quanta-sapphire bg-quanta-azure/10'
+                              : 'border-quanta-smoke'
+                          }`
+                        }
+                      >
+                        <span className="flex flex-col">
+                          <span className="flex items-center gap-2 font-medium text-quanta-denim">
+                            {option.label}
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase ${option.badgeClassName}`}
+                            >
+                              {option.badge}
+                            </span>
+                          </span>
+                          <span className="mt-0.5 text-xs text-quanta-pigeon">
+                            {option.description}
                           </span>
                         </span>
-                        <span className="mt-0.5 text-xs text-quanta-pigeon">
-                          Abort before any write when the path or a UUID
-                          collides. The default.
-                        </span>
-                      </span>
-                    </Radio>
-                    <Radio
-                      value="replace"
-                      className={({ isSelected }: { isSelected: boolean }) =>
-                        `w-full items-start rounded-lg border p-3 ${
-                          isSelected
-                            ? 'border-quanta-sapphire bg-quanta-azure/10'
-                            : 'border-quanta-smoke'
-                        }`
-                      }
-                    >
-                      <span className="flex flex-col">
-                        <span className="flex items-center gap-2 font-medium text-quanta-denim">
-                          Replace existing content
-                          <span className="rounded bg-quanta-ballet px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-quanta-candy uppercase">
-                            destructive
-                          </span>
-                        </span>
-                        <span className="mt-0.5 text-xs text-quanta-pigeon">
-                          Delete the item at the source-relative path, then
-                          recreate it. Unrelated siblings and parents are
-                          preserved. Confirmed before it runs.
-                        </span>
-                      </span>
-                    </Radio>
+                      </Radio>
+                    ))}
                   </RadioGroup>
                 </SectionCard>
 

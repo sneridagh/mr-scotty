@@ -281,6 +281,141 @@ describe('createTransferPlan', () => {
   });
 });
 
+describe('conflict policies', () => {
+  const existingPath = '/Plone/archive/news/launch';
+
+  /** A destination where the selected item's path is already taken. */
+  function conflictingFetch(
+    existing: Record<string, unknown> = launch,
+    { uidTaken = false }: { uidTaken?: boolean } = {},
+  ) {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      const path = canonicalRequestPath(url);
+      if (method === 'GET' && path === existingPath) {
+        return json({ ...existing, '@id': url.toString() });
+      }
+      if (
+        uidTaken &&
+        path.endsWith('/@search') &&
+        url.searchParams.get('UID') === 'launch-uid'
+      ) {
+        return json({ items: [{ '@id': url.toString() }], items_total: 1 });
+      }
+      if (method === 'PATCH') return new Response(null, { status: 204 });
+      return successfulFetch()(resource, init);
+    });
+    return fetchImpl;
+  }
+
+  test('the overwrite flag still maps to replace', async () => {
+    const plan = await createTransferPlan(
+      { ...input, overwrite: true },
+      conflictingFetch() as typeof fetch,
+    );
+    expect(plan.conflictPolicy).toBe('replace');
+    expect(plan.operations.at(-1)?.status).toBe('replace');
+  });
+
+  test('skip leaves the existing item alone and beams the rest', async () => {
+    const fetchImpl = conflictingFetch();
+    const plan = await createTransferPlan(
+      { ...input, conflictPolicy: 'skip' },
+      fetchImpl as typeof fetch,
+    );
+    expect(plan.operations.map((operation) => operation.status)).toEqual([
+      'create',
+      'skip',
+    ]);
+    expect(plan.operations.at(-1)?.payload).toBeUndefined();
+
+    fetchImpl.mockClear();
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+    const writes = fetchImpl.mock.calls.filter(([, init]) =>
+      ['POST', 'PATCH', 'DELETE'].includes(init?.method || 'GET'),
+    );
+    expect(writes.map(([resource]) => String(resource))).toEqual([
+      'https://new.example/Plone/++api++/archive',
+    ]);
+    expect(report.skipped).toEqual([
+      'https://new.example/Plone/archive/news/launch',
+    ]);
+  });
+
+  test('update patches the existing item, keeping its type, id and UUID', async () => {
+    const fetchImpl = conflictingFetch({ ...launch, UID: 'other-uid' });
+    const plan = await createTransferPlan(
+      { ...input, conflictPolicy: 'update' },
+      fetchImpl as typeof fetch,
+    );
+    const selected = plan.operations.at(-1);
+    expect(selected?.status).toBe('update');
+    expect(selected?.payload).toMatchObject({ title: 'Launch' });
+    expect(selected?.payload).not.toHaveProperty('UID');
+    expect(selected?.payload).not.toHaveProperty('id');
+    expect(selected?.payload).not.toHaveProperty('@type');
+
+    fetchImpl.mockClear();
+    const report = await executeTransferPlan(
+      plan,
+      input.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+    const patches = fetchImpl.mock.calls.filter(
+      ([, init]) => init?.method === 'PATCH',
+    );
+    expect(patches.map(([resource]) => String(resource))).toEqual([
+      'https://new.example/Plone/++api++/archive/news/launch',
+    ]);
+    expect(report.updated).toHaveLength(1);
+    expect(report.failed).toBeUndefined();
+  });
+
+  test('update refuses an existing item of another type', async () => {
+    await expect(
+      createTransferPlan(
+        { ...input, conflictPolicy: 'update' },
+        conflictingFetch({ ...launch, '@type': 'News Item' }) as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'type_mismatch', status: 409 });
+  });
+
+  test('rename creates the item under the next free id', async () => {
+    const plan = await createTransferPlan(
+      { ...input, conflictPolicy: 'rename' },
+      conflictingFetch({ ...launch, UID: 'other-uid' }) as typeof fetch,
+    );
+    const selected = plan.operations.at(-1);
+    expect(selected).toMatchObject({
+      status: 'rename',
+      destinationUrl: 'https://new.example/Plone/archive/news/launch-1',
+      renamedFrom: 'https://new.example/Plone/archive/news/launch',
+    });
+    expect(selected?.payload).toMatchObject({
+      id: 'launch-1',
+      UID: 'launch-uid',
+    });
+    expect(plan.destinationPath).toBe('/Plone/archive/news/launch-1');
+  });
+
+  test('rename gives the copy a new UUID when the original holds it', async () => {
+    const plan = await createTransferPlan(
+      { ...input, conflictPolicy: 'rename' },
+      conflictingFetch(launch, { uidTaken: true }) as typeof fetch,
+    );
+    const selected = plan.operations.at(-1);
+    expect(selected?.status).toBe('rename');
+    expect(selected?.payload).toMatchObject({ id: 'launch-1' });
+    expect(selected?.payload).not.toHaveProperty('UID');
+  });
+});
+
 describe('executeTransferPlan', () => {
   test('creates structural parents before the selected content', async () => {
     const fetchImpl = successfulFetch();
