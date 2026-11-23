@@ -3,5 +3,8 @@
     "controlpanelDescriptions": {
       "mr-scotty": "Transferir contenido entre sitios Plone"
     }
+  },
+  "mrScotty": {
+    "description": "Teletransporta contenido entre cualquier servidor plone.restapi. Se conservan las rutas y los UUID, se recrea la estructura y las dependencias viajan con su contenido."
   }
 }

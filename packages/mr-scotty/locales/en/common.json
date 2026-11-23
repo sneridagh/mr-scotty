@@ -3,5 +3,8 @@
     "controlpanelDescriptions": {
       "mr-scotty": "Transfer content between Plone sites"
     }
+  },
+  "mrScotty": {
+    "description": "Beam content between any plone.restapi servers. Paths and UUIDs are preserved, the structure is recreated, and dependencies travel with their content."
   }
 }

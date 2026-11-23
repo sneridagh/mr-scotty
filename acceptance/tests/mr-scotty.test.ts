@@ -50,15 +50,21 @@ async function waitForMrScottyHydration(page: Page) {
   ).toHaveAttribute('value', 'transfer');
 }
 
-async function expectBeamed(page: Page, sourceUrl: string) {
+/** The Activity entry of a run, found by its source path below the site. */
+function transferEntry(page: Page, sourcePath: string) {
+  return page
+    .getByRole('list', { name: 'Transfers' })
+    .getByRole('listitem')
+    .filter({ hasText: `Beamed ${sourcePath}` });
+}
+
+async function expectBeamed(page: Page, sourcePath: string) {
   // A finished transfer switches to the Activity tab, which reports it.
   await expect(page.getByRole('tab', { name: 'Activity' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
-  await expect(
-    page.getByText(`Beamed ${sourceUrl}`, { exact: true }),
-  ).toBeVisible();
+  await expect(transferEntry(page, sourcePath)).toBeVisible();
 }
 
 async function selectConflictPolicy(page: Page, label: string) {
@@ -169,12 +175,13 @@ test.describe('Mr. Scotty', () => {
 
     await page.getByRole('button', { name: 'Inspect transfer' }).click();
     await expect(page.getByText('Transfer plan')).toBeVisible();
+    // The plan names items by their path below the destination site.
     await expect(
-      page.getByText(`${destinationApiURL}/${sourceId}`, { exact: true }),
+      page.getByRole('rowheader', { name: `/${sourceId}`, exact: true }),
     ).toBeVisible();
 
     await page.getByRole('button', { name: 'Beam content' }).click();
-    await expectBeamed(page, `${sourceApiURL}/${sourceId}`);
+    await expectBeamed(page, `/${sourceId}`);
 
     // The run stays in the Activity history after a reload.
     await page.reload();
@@ -188,7 +195,7 @@ test.describe('Mr. Scotty', () => {
       });
     }).toPass({ timeout: 15_000 });
     await expect(
-      page.getByText(`Beamed ${sourceApiURL}/${sourceId}`, { exact: true }),
+      transferEntry(page, `/${sourceId}`),
     ).toBeVisible();
 
     const destinationHeaders = bearerAuth(destinationToken);
@@ -365,7 +372,7 @@ test.describe('Mr. Scotty', () => {
     // A destructive replace is confirmed in a dialog before it runs.
     await page.getByRole('button', { name: 'Beam content' }).click();
     await page.getByRole('button', { name: 'Delete & beam' }).click();
-    await expectBeamed(page, `${sourceApiURL}/${sourceId}`);
+    await expectBeamed(page, `/${sourceId}`);
 
     const destinationHeaders = bearerAuth(destinationToken);
     const destinationDocument = await getJson(
@@ -428,6 +435,15 @@ test.describe('Mr. Scotty', () => {
       .getByRole('button', { name: /Connection/ })
       .first()
       .click();
+    // The page stays visible while the dropdown is open, and the dropdown
+    // opens under its button, not in the corner.
+    await expect(page.locator('input[name="sourceUrl"]')).toBeVisible();
+    const trigger = await page
+      .getByRole('button', { name: /Connection/ })
+      .first()
+      .boundingBox();
+    const listbox = await page.getByRole('listbox').boundingBox();
+    expect(trigger && listbox && listbox.y > trigger.y).toBe(true);
     await page.getByRole('option', { name: 'Bearer token' }).click();
     const tokenField = page.getByLabel('Source bearer token');
     await expect(
@@ -516,7 +532,7 @@ test.describe('Mr. Scotty', () => {
     await expect(page.getByRole('gridcell', { name: 'create' })).toHaveCount(4);
 
     await page.getByRole('button', { name: 'Beam content' }).click();
-    await expectBeamed(page, `${sourceApiURL}/${folderId}`);
+    await expectBeamed(page, `/${folderId}`);
 
     const folder = await getJson(
       page,
@@ -596,7 +612,7 @@ test.describe('Mr. Scotty', () => {
       ).toBeVisible();
 
       await page.getByRole('button', { name: 'Beam content' }).click();
-      await expectBeamed(page, `${sourceApiURL}/${id}`);
+      await expectBeamed(page, `/${id}`);
 
       return {
         id,
@@ -611,14 +627,9 @@ test.describe('Mr. Scotty', () => {
       const { id, before, destinationApiURL, destinationHeaders } =
         await beamOverExisting(page, 'Skip existing content', 'skip');
 
-      // The Activity history also holds earlier runs, so look in this run's card.
+      // The Activity history also holds earlier runs, so look in this run's entry.
       await expect(
-        page
-          .getByRole('tabpanel')
-          .locator('div.rounded-xl', {
-            hasText: `Beamed ${getDefaultSourceApiURL()}/${id}`,
-          })
-          .getByText('Skipped 1 item.'),
+        transferEntry(page, `/${id}`).getByText('Skipped 1 item.'),
       ).toBeVisible();
       const after = await getJson(
         page,
