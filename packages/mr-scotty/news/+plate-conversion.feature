@@ -1,0 +1,1 @@
+Added a destination option, "Convert blocks to Aurora's document model (Plate)", on by default for the Aurora site's own backend. Page bodies are written as one Plate document in the `main` region, converted with the conversion functions Aurora registers, and the plan names the blocks Aurora cannot convert. @sneridagh

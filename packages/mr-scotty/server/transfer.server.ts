@@ -1,4 +1,5 @@
 import { isTokenExpired, readTokenClaims } from '../helpers/token';
+import type { PlateConverter } from './plate.server';
 
 export type EndpointAuth =
   | { type: 'anonymous' }
@@ -38,6 +39,11 @@ export interface TransferInput {
    * as another type, or `null` to skip them and everything inside them.
    */
   typeMap?: Record<string, string | null>;
+  /**
+   * Write the body of pages in Aurora's document model: one Plate document
+   * in the `main` region, converted from classic blocks.
+   */
+  convertToPlate?: boolean;
   /**
    * The most items a plan may write or check. Defaults to
    * `MR_SCOTTY_MAX_ITEMS`, or 500.
@@ -101,6 +107,10 @@ export interface TransferOperation {
    * skipped, or it is inside an item that was.
    */
   skipReason?: 'type' | 'parent';
+  /** Set when the payload's blocks were converted to a Plate document. */
+  convertedToPlate?: boolean;
+  /** Block types the conversion could not handle, which are left out. */
+  droppedBlocks?: string[];
   /**
    * The source's workflow state, which a written item is moved to with
    * workflow transitions once it exists.
@@ -161,6 +171,8 @@ export interface TransferPlan {
   destinationPath: string;
   conflictPolicy: ConflictPolicy;
   includeChildren: boolean;
+  /** Whether page bodies are written as Plate documents. */
+  convertToPlate?: boolean;
   /** @deprecated use `conflictPolicy`; kept as `conflictPolicy === 'replace'`. */
   overwrite: boolean;
   operations: TransferOperation[];
@@ -1275,7 +1287,15 @@ export async function createTransferPlan(
   input: TransferInput,
   fetchImpl: Fetch = fetch,
   policy: SsrfPolicy = readSsrfPolicyFromEnv(),
+  { plateConverter }: { plateConverter?: PlateConverter } = {},
 ): Promise<TransferPlan> {
+  if (input.convertToPlate && !plateConverter) {
+    throw new TransferError(
+      'plate_unavailable',
+      'This server cannot convert blocks to the Aurora document model.',
+      501,
+    );
+  }
   const conflictPolicy: ConflictPolicy =
     input.conflictPolicy ?? (input.overwrite === true ? 'replace' : 'fail');
   const overwrite = conflictPolicy === 'replace';
@@ -1701,6 +1721,8 @@ export async function createTransferPlan(
   for (const item of planned) {
     const { node, identity, status } = item;
     let payload: Record<string, unknown> | undefined;
+    let convertedToPlate = false;
+    let droppedBlocks: string[] = [];
     if (status !== 'reuse' && status !== 'skip') {
       payload =
         node.kind === 'placeholder'
@@ -1724,6 +1746,17 @@ export async function createTransferPlan(
         );
       }
       if (item.targetType !== identity.type) payload['@type'] = item.targetType;
+      if (input.convertToPlate && plateConverter && node.kind === 'content') {
+        // After rewriting image references, so the converted blocks keep
+        // the destination URLs.
+        const hadBlocks = isRecord(payload.blocks);
+        const conversion = plateConverter(payload);
+        payload = conversion.payload;
+        if (hadBlocks) {
+          convertedToPlate = true;
+          droppedBlocks = conversion.droppedBlocks;
+        }
+      }
       if (item.newUid) delete payload.UID;
       if (status === 'update') {
         // The existing item keeps its type, id and UUID.
@@ -1744,6 +1777,8 @@ export async function createTransferPlan(
         : { sourceType: identity.type }),
       ...(item.missingType ? { missingType: true } : {}),
       ...(item.skipReason ? { skipReason: item.skipReason } : {}),
+      ...(convertedToPlate ? { convertedToPlate } : {}),
+      ...(droppedBlocks.length > 0 ? { droppedBlocks } : {}),
       kind: node.kind,
       status,
       ...(item.renamedFrom ? { renamedFrom: item.renamedFrom } : {}),
@@ -1811,6 +1846,7 @@ export async function createTransferPlan(
     ).pathname,
     conflictPolicy,
     includeChildren,
+    ...(input.convertToPlate ? { convertToPlate: true } : {}),
     overwrite,
     operations,
   };

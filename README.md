@@ -20,6 +20,8 @@ The transfer runs on the Aurora server, with live progress, and can be cancelled
 - Preflight conflict detection and automatic structural parent creation.
 - Conflict policies for content that already exists: fail, skip, update in place, keep both under a new id, or replace.
 - Inline image/file fields and internal image-block dependencies are transferred with their content.
+- Content types the destination lacks are flagged before anything is written, and can be beamed as another type or skipped.
+- Page bodies can be converted to Aurora's document model (Plate) on the way.
 - Transfers run as background jobs with live progress in the Activity tab, and can be cancelled.
 - Anonymous, bearer token, or username and password connections. Bearer tokens work for people who log in through Google, GitHub or another provider, and are renewed during long transfers.
 
