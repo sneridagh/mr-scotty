@@ -384,13 +384,31 @@ async function contentExists(
   auth: EndpointAuth,
   fetchImpl: Fetch,
 ): Promise<ContentRecord | undefined> {
+  let content: ContentRecord;
   try {
-    return await requestJson(apiUrlAtRoot(url, rootUrl), auth, fetchImpl);
+    content = await requestJson(apiUrlAtRoot(url, rootUrl), auth, fetchImpl);
   } catch (error) {
-    if (error instanceof TransferError && error.status === 404)
+    // A missing id can still traverse to something that is not content: a
+    // view such as `@@images` answers 400 ("Missing image scale path").
+    if (
+      error instanceof TransferError &&
+      (error.status === 404 || error.status === 400)
+    )
       return undefined;
     throw error;
   }
+  // Zope acquisition answers a missing path with content found further up,
+  // such as `/archive/news` with the site's `/news`. Only content that lives
+  // at the requested path counts.
+  if (typeof content['@id'] === 'string') {
+    const found = canonicalizePathname(
+      decodeURIComponent(new URL(content['@id'], url).pathname),
+    );
+    if (found !== canonicalizePathname(decodeURIComponent(url.pathname))) {
+      return undefined;
+    }
+  }
+  return content;
 }
 
 function rebaseApiUrl(value: string, endpoint: URL): URL {

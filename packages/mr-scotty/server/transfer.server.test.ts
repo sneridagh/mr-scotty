@@ -416,6 +416,47 @@ describe('conflict policies', () => {
   });
 });
 
+describe('destination existence check', () => {
+  function fetchAnswering(path: string, response: () => Response) {
+    const fetchImpl = successfulFetch();
+    fetchImpl.mockImplementation(async (resource, init) => {
+      const url = new URL(String(resource));
+      if (
+        (init?.method || 'GET') === 'GET' &&
+        canonicalRequestPath(url) === path
+      ) {
+        return response();
+      }
+      return successfulFetch()(resource, init);
+    });
+    return fetchImpl;
+  }
+
+  test('ignores content acquired from further up the tree', async () => {
+    // Zope answers /archive/news with the site's /news when it is missing.
+    const fetchImpl = fetchAnswering('/Plone/archive/news', () =>
+      json({ ...news, '@id': 'https://new.example/Plone/news' }),
+    );
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    expect(plan.operations.map((operation) => operation.status)).toEqual([
+      'create',
+      'create',
+    ]);
+  });
+
+  test('treats a path that resolves to a view as missing', async () => {
+    // A missing `images` resolves to the @@images view, which answers 400.
+    const fetchImpl = fetchAnswering('/Plone/archive/news', () =>
+      json({ message: 'Missing image scale path', type: 'BadRequest' }, 400),
+    );
+    const plan = await createTransferPlan(input, fetchImpl as typeof fetch);
+    expect(plan.operations.map((operation) => operation.status)).toEqual([
+      'create',
+      'create',
+    ]);
+  });
+});
+
 describe('executeTransferPlan', () => {
   test('creates structural parents before the selected content', async () => {
     const fetchImpl = successfulFetch();
