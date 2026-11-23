@@ -3,5 +3,8 @@
     "controlpanelDescriptions": {
       "mr-scotty": "Inhalte zwischen Plone-Websites übertragen"
     }
+  },
+  "mrScotty": {
+    "description": "Inhalte zwischen beliebigen plone.restapi-Servern beamen. Pfade und UUIDs bleiben erhalten, die Struktur wird neu angelegt, und Abhängigkeiten reisen mit ihren Inhalten."
   }
 }

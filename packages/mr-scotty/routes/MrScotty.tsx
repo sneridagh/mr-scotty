@@ -1,11 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import config from '@plone/registry';
+import {
+  Cell as PlanCell,
+  Column as PlanColumn,
+  Row as PlanRow,
+  Table as PlanTable,
+  TableBody as PlanTableBody,
+  TableHeader as PlanTableHeader,
+} from 'react-aria-components';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
-  Cell,
   Checkbox,
-  Column,
   Container,
   Heading,
   Link,
@@ -13,13 +19,9 @@ import {
   ProgressBar,
   Radio,
   RadioGroup,
-  Row,
   Select,
   SelectItem,
   Tab,
-  Table,
-  TableBody,
-  TableHeader,
   TabList,
   TabPanel,
   Tabs,
@@ -68,6 +70,7 @@ import {
 } from '../server/transfer.server';
 import BeamIcon from '../components/BeamIcon';
 import { describeToken } from '../helpers/token';
+import { isWithin, siteLabel, sitePath, splitPath } from '../helpers/paths';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
 const CONFLICT_POLICIES: ReadonlyArray<{
@@ -437,15 +440,6 @@ function isDependency(
   return operation.kind === 'content' && operation.sourceUrl !== plan.sourceUrl;
 }
 
-function operationType(
-  plan: TransferPlan,
-  operation: TransferPlan['operations'][number],
-): string {
-  if (operation.kind === 'placeholder') return 'Document (structural)';
-  if (isDependency(plan, operation)) return `${operation.type} (dependency)`;
-  return operation.type;
-}
-
 const STATUS_TAG: Record<TransferOperation['status'], string> = {
   create: 'bg-quanta-mint text-quanta-turtle',
   reuse: 'bg-quanta-snow text-quanta-pigeon',
@@ -517,6 +511,55 @@ function StatPill({
   );
 }
 
+/** A small outlined tag next to a type, such as "structural". */
+function RowTag({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded border border-quanta-smoke px-1.5 text-[10px] leading-4 text-quanta-pigeon">
+      {children}
+    </span>
+  );
+}
+
+/** `/news/launch`, with the last segment stressed. */
+function PathText({ path, title }: { path: string; title?: string }) {
+  const { parent, leaf } = splitPath(path);
+  return (
+    <span className="font-mono break-all" title={title}>
+      <span className="text-quanta-pigeon">{parent}</span>
+      <span className="font-semibold text-quanta-denim">{leaf}</span>
+    </span>
+  );
+}
+
+/** `old.example.org /news/launch`, or `this site /archive/news/launch`. */
+function Place({
+  url,
+  rootUrl,
+  thisSiteUrl,
+  suffix,
+}: {
+  url: string;
+  rootUrl?: string;
+  thisSiteUrl: string;
+  suffix?: string;
+}) {
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
+      <span className="text-quanta-iron">
+        {siteLabel(rootUrl ?? url, thisSiteUrl)}
+      </span>
+      <PathText
+        path={
+          suffix
+            ? `${sitePath(url, rootUrl).replace(/\/$/, '')}/${suffix}`
+            : sitePath(url, rootUrl)
+        }
+        title={url}
+      />
+    </span>
+  );
+}
+
 function Callout({
   tone = 'neutral',
   children,
@@ -548,7 +591,115 @@ function hasPlan(result: ActionResult | undefined): result is PlanResult {
   return result?.ok === true && 'plan' in result;
 }
 
-function PlanReview({ result }: { result: PlanResult }) {
+/** The operation for the item the person picked. */
+function selectedOperation(plan: TransferPlan) {
+  return plan.operations.find(
+    (operation) => operation.sourceUrl === plan.sourceUrl,
+  );
+}
+
+const PLAN_HEAD = `
+  px-3 py-2 text-left text-[11px] font-semibold tracking-wide text-quanta-pigeon uppercase
+`;
+const PLAN_CELL = `
+  px-3 py-2.5 align-middle outline-none
+  focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-quanta-sapphire
+`;
+
+function PlanTableView({ plan }: { plan: TransferPlan }) {
+  return (
+    <div
+      className={`overflow-auto rounded-lg border border-quanta-smoke ${
+        // Long plans scroll inside the table instead of stretching the page.
+        plan.operations.length > 12 ? 'max-h-112' : ''
+      }`}
+    >
+      <PlanTable
+        aria-label="Transfer plan operations"
+        className="w-full border-collapse text-sm"
+      >
+        <PlanTableHeader className="sticky top-0 z-10 bg-quanta-snow">
+          <PlanColumn isRowHeader className={PLAN_HEAD}>
+            Destination path
+          </PlanColumn>
+          <PlanColumn className={PLAN_HEAD}>Type</PlanColumn>
+          <PlanColumn className={`${PLAN_HEAD} w-28`}>Action</PlanColumn>
+        </PlanTableHeader>
+        <PlanTableBody items={plan.operations}>
+          {(operation) => {
+            const dependency = isDependency(plan, operation);
+            const selected = operation.sourceUrl === plan.sourceUrl;
+            return (
+              <PlanRow
+                id={operation.destinationUrl}
+                className={`border-t border-quanta-smoke outline-none ${
+                  operation.status === 'replace' ? 'bg-quanta-ballet/50' : ''
+                }`}
+              >
+                <PlanCell className={PLAN_CELL}>
+                  <span className="flex items-center gap-2 text-[13px]">
+                    {dependency && (
+                      <Icon
+                        name="link"
+                        className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
+                      />
+                    )}
+                    <span className="flex flex-col">
+                      <PathText
+                        path={sitePath(
+                          operation.destinationUrl,
+                          plan.destinationRootUrl,
+                        )}
+                        title={operation.destinationUrl}
+                      />
+                      {operation.renamedFrom && (
+                        <span className="font-sans text-xs text-quanta-iron">
+                          {operation.renamedFrom.split('/').at(-1)} is taken
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                </PlanCell>
+                <PlanCell className={PLAN_CELL}>
+                  <span className="flex flex-col gap-0.5 text-quanta-iron">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {operation.kind === 'placeholder'
+                        ? 'Document'
+                        : operation.type}
+                      {operation.kind === 'placeholder' && (
+                        <RowTag>structural</RowTag>
+                      )}
+                      {selected && <RowTag>selected</RowTag>}
+                      {dependency && <RowTag>dependency</RowTag>}
+                    </span>
+                    {operation.reviewState && (
+                      <span className="text-xs text-quanta-pigeon">
+                        {operation.reviewState}
+                      </span>
+                    )}
+                  </span>
+                </PlanCell>
+                <PlanCell className={PLAN_CELL}>
+                  <StatusTag status={operation.status} />
+                </PlanCell>
+              </PlanRow>
+            );
+          }}
+        </PlanTableBody>
+      </PlanTable>
+    </div>
+  );
+}
+
+function PlanReview({
+  result,
+  beamButton,
+  onEdit,
+}: {
+  result: PlanResult;
+  beamButton: React.ReactNode;
+  onEdit: () => void;
+}) {
   const { plan } = result;
   const countOf = (status: TransferOperation['status']) =>
     plan.operations.filter((o) => o.status === status).length;
@@ -558,10 +709,19 @@ function PlanReview({ result }: { result: PlanResult }) {
   const dependencies = plan.operations.filter((o) => isDependency(plan, o));
   // Once beaming starts, its progress and report are on the Activity tab.
   const started = result.intent === 'transfer';
+  const ref = useRef<HTMLElement>(null);
+
+  // Bring a fresh plan into view: it renders below the whole form.
+  useEffect(() => {
+    if (!started) {
+      ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [result, started]);
 
   return (
     <section
-      className="overflow-hidden rounded-xl border border-quanta-smoke bg-quanta-air"
+      ref={ref}
+      className="scroll-mt-6 overflow-hidden rounded-xl border border-quanta-smoke bg-quanta-air"
       aria-live="polite"
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-quanta-smoke px-6 py-4">
@@ -569,82 +729,33 @@ function PlanReview({ result }: { result: PlanResult }) {
           Transfer plan
         </h2>
         <div className="flex flex-wrap gap-2">
-          {STATUS_ORDER.filter(
-            (status) => status === 'create' || countOf(status) > 0,
-          ).map((status) => (
-            <StatPill
-              key={status}
-              count={countOf(status)}
-              label={status}
-              className={STATUS_TAG[status]}
-            />
-          ))}
+          {STATUS_ORDER.filter((status) => countOf(status) > 0).map(
+            (status) => (
+              <StatPill
+                key={status}
+                count={countOf(status)}
+                label={status}
+                className={STATUS_TAG[status]}
+              />
+            ),
+          )}
           {dependencies.length > 0 && (
             <StatPill
               count={dependencies.length}
-              label="dependency"
+              label={dependencies.length === 1 ? 'dependency' : 'dependencies'}
               className="bg-quanta-azure/20 text-quanta-sapphire"
             />
           )}
         </div>
-        <span className="ml-auto font-mono text-xs break-all text-quanta-pigeon">
-          {plan.destinationPath}
+        <span className="ml-auto text-xs text-quanta-pigeon">
+          {started
+            ? 'Beaming started'
+            : 'Checked against the destination · nothing written yet'}
         </span>
       </div>
 
       <div className="px-6 pt-4">
-        <Table
-          aria-label="Transfer plan operations"
-          // Long plans scroll inside the table instead of stretching the page.
-          className={plan.operations.length > 12 ? 'max-h-112' : 'max-h-none'}
-        >
-          <TableHeader>
-            <Column isRowHeader defaultWidth="3fr" minWidth={240}>
-              Destination path
-            </Column>
-            <Column defaultWidth="1fr" minWidth={140}>
-              Type
-            </Column>
-            <Column defaultWidth={110} minWidth={110}>
-              Action
-            </Column>
-          </TableHeader>
-          <TableBody items={plan.operations}>
-            {(operation) => (
-              <Row id={operation.destinationUrl}>
-                <Cell>
-                  <span className="flex items-center gap-2 font-mono text-[13px] break-all text-quanta-denim">
-                    {isDependency(plan, operation) && (
-                      <Icon
-                        name="link"
-                        className="h-3.5 w-3.5 shrink-0 text-quanta-sapphire"
-                      />
-                    )}
-                    <span className="flex flex-col">
-                      {operation.destinationUrl}
-                      {operation.renamedFrom && (
-                        <span className="font-sans text-xs text-quanta-iron">
-                          {operation.renamedFrom.split('/').at(-1)} is taken
-                        </span>
-                      )}
-                    </span>
-                  </span>
-                </Cell>
-                <Cell>
-                  <span className="flex flex-col text-quanta-iron">
-                    {operationType(plan, operation)}
-                    {operation.reviewState && (
-                      <span className="text-xs">{operation.reviewState}</span>
-                    )}
-                  </span>
-                </Cell>
-                <Cell>
-                  <StatusTag status={operation.status} />
-                </Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
+        <PlanTableView plan={plan} />
       </div>
 
       <div className="flex flex-col gap-3 px-6 py-4">
@@ -692,6 +803,18 @@ function PlanReview({ result }: { result: PlanResult }) {
           </Callout>
         )}
       </div>
+
+      {!started && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-quanta-smoke px-6 py-4">
+          {beamButton}
+          <Button type="button" variant="neutral" onPress={onEdit}>
+            Edit options
+          </Button>
+          <span className="text-sm text-quanta-pigeon">
+            Runs in the background; follow it under Activity.
+          </span>
+        </div>
+      )}
     </section>
   );
 }
@@ -732,15 +855,9 @@ function ActivityEmpty({ hint }: { hint: string }) {
   );
 }
 
-function JobCard({
-  tone,
-  title,
-  children,
-}: {
-  tone: 'running' | 'done' | 'failed' | 'cancelled';
-  title: React.ReactNode;
-  children: React.ReactNode;
-}) {
+type JobTone = 'running' | 'done' | 'failed' | 'cancelled';
+
+function JobIcon({ tone }: { tone: JobTone }) {
   const badge = {
     running: 'bg-quanta-arctic text-quanta-royal',
     done: 'bg-quanta-mint text-quanta-turtle',
@@ -748,26 +865,62 @@ function JobCard({
     cancelled: 'bg-quanta-snow text-quanta-pigeon',
   }[tone];
   return (
-    <div className="rounded-xl border border-quanta-smoke bg-quanta-air p-5">
-      <div className="flex items-start gap-3">
-        <span
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${badge}`}
-        >
-          <Icon
-            name={
-              tone === 'running' ? 'beam' : tone === 'done' ? 'check' : 'close'
-            }
-            className="h-4 w-4"
-          />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold break-words text-quanta-denim">
-            {title}
-          </p>
-          {children}
-        </div>
-      </div>
-    </div>
+    <span
+      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${badge}`}
+    >
+      <Icon
+        name={tone === 'running' ? 'beam' : tone === 'done' ? 'check' : 'close'}
+        className="h-4 w-4"
+      />
+    </span>
+  );
+}
+
+/**
+ * The current time, ticking every 30 seconds. Undefined until the page has
+ * hydrated, so the server and the first client render agree.
+ */
+function useNow(): number | undefined {
+  const [now, setNow] = useState<number>();
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
+function relativeTime(iso: string, now: number): string {
+  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  if (seconds < 45) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    dateStyle: 'medium',
+  });
+}
+
+function When({
+  iso,
+  prefix,
+  now,
+}: {
+  iso: string;
+  prefix?: string;
+  now: number | undefined;
+}) {
+  if (now === undefined) return null;
+  return (
+    <time
+      dateTime={iso}
+      title={new Date(iso).toLocaleString()}
+      className="text-xs font-normal text-quanta-pigeon"
+    >
+      · {prefix ? `${prefix} ` : ''}
+      {relativeTime(iso, now)}
+    </time>
   );
 }
 
@@ -827,100 +980,157 @@ function CancelButton({ jobId }: { jobId: string }) {
   );
 }
 
-function JobItem({ job }: { job: JobSnapshot }) {
+function JobItem({
+  job,
+  thisSiteUrl,
+  now,
+}: {
+  job: JobSnapshot;
+  thisSiteUrl: string;
+  now: number | undefined;
+}) {
   const { report, progress } = job;
-  const destinationLink = report && (
-    <Link
-      className="text-quanta-sapphire underline"
-      href={report.destinationUrl}
-    >
-      Open destination
-    </Link>
+  const sourcePath = sitePath(job.sourceUrl, job.sourceRootUrl);
+  const route = (
+    <p className="mt-1 text-xs text-quanta-pigeon">
+      <Place
+        url={job.sourceUrl}
+        rootUrl={job.sourceRootUrl}
+        thisSiteUrl={thisSiteUrl}
+      />{' '}
+      <span aria-hidden>→</span>
+      <span className="sr-only">beamed to</span>{' '}
+      <Place
+        url={job.destinationUrl}
+        rootUrl={job.destinationRootUrl}
+        thisSiteUrl={thisSiteUrl}
+      />
+    </p>
   );
-
-  if (job.status === 'running') {
-    return (
-      <JobCard tone="running" title={`Beaming ${job.sourceUrl}`}>
-        <div className="mt-3 flex items-end gap-4">
-          <ProgressBar
-            label={`${progress.done} of ${plural(progress.total, 'item')}`}
-            value={progress.done}
-            maxValue={Math.max(progress.total, 1)}
-            className="flex-1"
-          />
-          <CancelButton jobId={job.id} />
-        </div>
-        {progress.current && (
-          <p className="mt-2 truncate font-mono text-xs text-quanta-pigeon">
-            {progress.current.status} {progress.current.destinationUrl}
-          </p>
-        )}
-      </JobCard>
-    );
-  }
-
+  const verb =
+    job.status === 'running'
+      ? 'Beaming'
+      : job.status === 'done'
+        ? 'Beamed'
+        : job.status === 'cancelled'
+          ? 'Cancelled'
+          : report
+            ? 'Partially beamed'
+            : 'Could not beam';
   const failed = report?.failed;
-  const title =
-    job.status === 'done'
-      ? `Beamed ${job.sourceUrl}`
-      : job.status === 'cancelled'
-        ? `Cancelled ${job.sourceUrl}`
-        : report
-          ? `Partially beamed ${job.sourceUrl}`
-          : `Could not beam ${job.sourceUrl}`;
+
   return (
-    <JobCard tone={job.status} title={title}>
-      <p className="mt-1 font-mono text-xs break-all text-quanta-pigeon">
-        {job.sourceUrl} → {job.destinationUrl}
-      </p>
-      {report && (
-        <p className="mt-2 text-sm text-quanta-pigeon">
-          {job.status === 'cancelled' &&
-            `Stopped after ${progress.done} of ${plural(progress.total, 'item')}. `}
-          {reportSummary(report)} {destinationLink}
+    <li className="flex items-start gap-3 px-5 py-4">
+      <JobIcon tone={job.status} />
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-baseline gap-x-1.5 text-sm font-semibold text-quanta-denim">
+          <span>
+            {verb} <PathText path={sourcePath} title={job.sourceUrl} />
+          </span>
+          {job.status === 'running' ? (
+            <When iso={job.startedAt} prefix="started" now={now} />
+          ) : (
+            <When iso={job.finishedAt ?? job.startedAt} now={now} />
+          )}
         </p>
-      )}
-      {failed && (
-        <p className="mt-2 text-xs text-quanta-candy">
-          Stopped at {failed.destinationUrl}: {failed.message}
-          {failed.restored !== undefined &&
-            (failed.restored
-              ? ' The original content at that path was restored.'
-              : ' The original content at that path could not be restored.')}
-        </p>
-      )}
-      {job.error && (
-        <p className="mt-2 text-xs text-quanta-candy">
-          {job.error.message} (error code: {job.error.code})
-        </p>
-      )}
-      {report && report.warnings.length > 0 && (
-        <div className="mt-3">
-          <WorkflowWarnings warnings={report.warnings} />
-        </div>
-      )}
-    </JobCard>
+        {route}
+
+        {job.status === 'running' ? (
+          <>
+            <div className="mt-3 flex items-end gap-4">
+              <ProgressBar
+                label={`${progress.done} of ${plural(progress.total, 'item')}`}
+                value={progress.done}
+                maxValue={Math.max(progress.total, 1)}
+                className="max-w-sm flex-1"
+              />
+              <CancelButton jobId={job.id} />
+            </div>
+            {progress.current && (
+              <p className="mt-2 truncate text-xs text-quanta-pigeon">
+                {progress.current.status}{' '}
+                <PathText
+                  path={sitePath(
+                    progress.current.destinationUrl,
+                    job.destinationRootUrl,
+                  )}
+                  title={progress.current.destinationUrl}
+                />
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            {report && (
+              <p className="mt-2 text-sm text-quanta-pigeon">
+                {job.status === 'cancelled' &&
+                  `Stopped after ${progress.done} of ${plural(progress.total, 'item')}. `}
+                {reportSummary(report)}{' '}
+                <Link
+                  className="text-quanta-sapphire underline"
+                  href={report.destinationUrl}
+                >
+                  Open destination
+                </Link>
+              </p>
+            )}
+            {failed && (
+              <p className="mt-2 text-xs text-quanta-candy">
+                Stopped at{' '}
+                <span className="font-mono break-all">
+                  {sitePath(failed.destinationUrl, job.destinationRootUrl)}
+                </span>
+                : {failed.message}
+                {failed.restored !== undefined &&
+                  (failed.restored
+                    ? ' The original content at that path was restored.'
+                    : ' The original content at that path could not be restored.')}
+              </p>
+            )}
+            {job.error && (
+              <p className="mt-2 text-xs text-quanta-candy">
+                {job.error.message} (error code: {job.error.code})
+              </p>
+            )}
+            {report && report.warnings.length > 0 && (
+              <div className="mt-3">
+                <WorkflowWarnings warnings={report.warnings} />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </li>
   );
 }
 
 function ActivityPanel({
   result,
   jobs,
+  thisSiteUrl,
 }: {
   result: ActionResult | undefined;
   jobs: JobSnapshot[];
+  thisSiteUrl: string;
 }) {
+  const now = useNow();
   return (
     <div className="flex flex-col gap-4" aria-live="polite">
       {result?.ok === false && (
-        <JobCard tone="failed" title="Transfer failed to start">
-          <p className="mt-1 text-sm text-quanta-denim">
-            {result.error.message}
-          </p>
-          <p className="mt-1 text-xs text-quanta-pigeon">
-            Error code: {result.error.code}
-          </p>
-        </JobCard>
+        <div className="flex items-start gap-3 rounded-xl border border-quanta-smoke bg-quanta-air px-5 py-4">
+          <JobIcon tone="failed" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-quanta-denim">
+              Transfer failed to start
+            </p>
+            <p className="mt-1 text-sm text-quanta-denim">
+              {result.error.message}
+            </p>
+            <p className="mt-1 text-xs text-quanta-pigeon">
+              Error code: {result.error.code}
+            </p>
+          </div>
+        </div>
       )}
       {jobs.length === 0 && result?.ok !== false && (
         <ActivityEmpty
@@ -931,13 +1141,128 @@ function ActivityPanel({
           }
         />
       )}
-      {jobs.map((job) => (
-        <JobItem key={job.id} job={job} />
-      ))}
+      {jobs.length > 0 && (
+        <ul
+          aria-label="Transfers"
+          className="divide-y divide-quanta-smoke overflow-hidden rounded-xl border border-quanta-smoke bg-quanta-air"
+        >
+          {jobs.map((job) => (
+            <JobItem
+              key={job.id}
+              job={job}
+              thisSiteUrl={thisSiteUrl}
+              now={now}
+            />
+          ))}
+        </ul>
+      )}
       <p className="text-center text-xs text-quanta-pigeon">
         Runs are kept on this server until it restarts.
       </p>
     </div>
+  );
+}
+
+/** Where the form's content would land, as far as it is known yet. */
+function TransferPreview({
+  sourceUrl,
+  destinationUrl,
+  plan,
+  thisSiteUrl,
+}: {
+  sourceUrl: string;
+  destinationUrl: string;
+  plan?: TransferPlan;
+  thisSiteUrl: string;
+}) {
+  const selected = plan && selectedOperation(plan);
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg bg-quanta-snow p-3 text-[13px] text-quanta-pigeon">
+      <Icon name="arrow" className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="font-semibold text-quanta-denim">Result:</span>
+        {plan && selected ? (
+          <>
+            <Place
+              url={plan.sourceUrl}
+              rootUrl={plan.sourceRootUrl}
+              thisSiteUrl={thisSiteUrl}
+            />
+            <span aria-hidden>→</span>
+            <span className="sr-only">beamed to</span>
+            <Place
+              url={selected.destinationUrl}
+              rootUrl={plan.destinationRootUrl}
+              thisSiteUrl={thisSiteUrl}
+            />
+          </>
+        ) : (
+          <>
+            {sourceUrl ? (
+              <Place url={sourceUrl} thisSiteUrl={thisSiteUrl} />
+            ) : (
+              <span>the source item</span>
+            )}
+            <span aria-hidden>→</span>
+            <span className="sr-only">beamed to</span>
+            {destinationUrl ? (
+              <Place
+                url={destinationUrl}
+                rootUrl={
+                  isWithin(destinationUrl, thisSiteUrl)
+                    ? thisSiteUrl
+                    : undefined
+                }
+                thisSiteUrl={thisSiteUrl}
+                suffix="…"
+              />
+            ) : (
+              <span>the destination container</span>
+            )}
+            <span className="basis-full text-xs">
+              Inspect the transfer to see the exact destination path.
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BeamButton({
+  policy,
+  busy,
+  label,
+  onConfirm,
+}: {
+  policy: ConflictPolicy;
+  busy: boolean;
+  label: string;
+  onConfirm: () => void;
+}) {
+  // Replace is confirmed in a dialog, whose button submits the form.
+  return policy === 'replace' ? (
+    <Button
+      type="button"
+      variant="primary"
+      accent
+      isDisabled={busy}
+      onPress={onConfirm}
+    >
+      {busy ? 'Working…' : label}
+    </Button>
+  ) : (
+    <Button
+      type="submit"
+      form={FORM_ID}
+      name="intent"
+      value="transfer"
+      variant="primary"
+      accent
+      isDisabled={busy}
+    >
+      {busy ? 'Working…' : label}
+    </Button>
   );
 }
 
@@ -956,6 +1281,7 @@ export default function MrScotty() {
       : loadedJobs,
   );
   const busy = navigation.state !== 'idle';
+  const running = jobs.filter((job) => job.status === 'running').length;
 
   const [tab, setTab] = useState<'new' | 'activity'>('new');
   const [policy, setPolicy] = useState<ConflictPolicy>('fail');
@@ -966,6 +1292,7 @@ export default function MrScotty() {
   );
   const [destinationUrlValue, setDestinationUrlValue] =
     useState(destinationUrl);
+  const formTop = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!hasPlan(result)) return;
@@ -975,6 +1302,23 @@ export default function MrScotty() {
     setDestinationUrlValue(result.form.destinationUrl);
     if (result.intent === 'transfer') setTab('activity');
   }, [result]);
+
+  // The inspected plan, while the form still asks for that same transfer.
+  const currentPlan =
+    hasPlan(result) &&
+    result.intent === 'preflight' &&
+    result.form.sourceUrl === sourceUrlValue.trim() &&
+    result.form.destinationUrl === destinationUrlValue.trim() &&
+    result.form.includeChildren === includeChildren
+      ? result.plan
+      : undefined;
+  // Only a plan inspected with Replace knows what Replace deletes.
+  const toReplace =
+    currentPlan?.conflictPolicy === 'replace'
+      ? currentPlan.operations.filter(
+          (operation) => operation.status === 'replace',
+        )
+      : undefined;
 
   return (
     <main className="route-mr-scotty">
@@ -1006,8 +1350,8 @@ export default function MrScotty() {
           >
             Mr. Scotty
           </h1>
-          <p className="text-sm text-quanta-iron">
-            {t('cmsui.controlpanelDescriptions.mr-scotty')}
+          <p className="max-w-prose text-sm text-quanta-iron">
+            {t('mrScotty.description')}
           </p>
         </header>
 
@@ -1017,38 +1361,59 @@ export default function MrScotty() {
         >
           <TabList aria-label="Mr. Scotty" className="mb-6">
             <Tab id="new">New transfer</Tab>
-            <Tab id="activity">Activity</Tab>
+            <Tab id="activity">
+              <span className="flex items-center gap-2">
+                Activity
+                {running > 0 ? (
+                  <span className="rounded-full bg-quanta-arctic px-2 text-[11px] font-semibold text-quanta-royal">
+                    {running} running
+                  </span>
+                ) : jobs.length > 0 ? (
+                  <span className="rounded-full border border-quanta-smoke bg-quanta-snow px-1.5 text-[11px] text-quanta-pigeon">
+                    {jobs.length}
+                  </span>
+                ) : null}
+              </span>
+            </Tab>
           </TabList>
 
-          {/* Both panels stay mounted so the form keeps its state; React Aria
-              marks the hidden one inert and leaves hiding it to the styles. */}
+          {/* Both panels stay mounted so the form keeps its state. React Aria
+              marks the hidden one inert, and only that panel itself is hidden:
+              Tailwind's `inert:` would also match a panel inside an inert
+              page, which is what an open dropdown or dialog makes it. */}
           <TabPanel
             id="new"
             shouldForceMount
-            className="flex flex-col gap-6 p-0 inert:hidden"
+            className="flex flex-col gap-6 p-0 [&[inert]]:hidden"
           >
             <Form id={FORM_ID} method="post" noValidate>
               <input type="hidden" name="conflictPolicy" value={policy} />
               {includeChildren && (
                 <input type="hidden" name="includeChildren" value="true" />
               )}
-              <div className="flex flex-col gap-6">
+              <div ref={formTop} className="flex scroll-mt-6 flex-col gap-6">
                 <SectionCard
                   icon="source"
                   title="Source"
-                  description="The content object to read from."
+                  description="Where content is read from."
                 >
                   <div className="flex flex-col gap-4">
-                    <TextField
-                      label="Source content URL"
-                      description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
-                      name="sourceUrl"
-                      type="url"
-                      placeholder="https://old.example/Plone/news/item"
-                      value={sourceUrlValue}
-                      onChange={setSourceUrlValue}
-                      isRequired
-                    />
+                    <div className="grid gap-4 md:grid-cols-2 md:items-start">
+                      <AuthenticationFields
+                        prefix="source"
+                        defaultMode="anonymous"
+                      />
+                      <TextField
+                        label="Source content URL"
+                        description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
+                        name="sourceUrl"
+                        type="url"
+                        placeholder="https://old.example/Plone/news/item"
+                        value={sourceUrlValue}
+                        onChange={setSourceUrlValue}
+                        isRequired
+                      />
+                    </div>
                     <Checkbox
                       isSelected={includeChildren}
                       onChange={setIncludeChildren}
@@ -1057,10 +1422,6 @@ export default function MrScotty() {
                     >
                       Include everything inside
                     </Checkbox>
-                    <AuthenticationFields
-                      prefix="source"
-                      defaultMode="anonymous"
-                    />
                   </div>
                 </SectionCard>
 
@@ -1070,32 +1431,27 @@ export default function MrScotty() {
                   description="The container content is beamed into."
                 >
                   <div className="flex flex-col gap-4">
-                    <TextField
-                      label="Destination container URL"
-                      description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
-                      name="destinationUrl"
-                      type="url"
-                      value={destinationUrlValue}
-                      onChange={setDestinationUrlValue}
-                      isRequired
-                    />
-                    <AuthenticationFields
-                      prefix="destination"
-                      defaultMode="session"
-                    />
-                    <div className="flex items-center gap-2 rounded-lg bg-quanta-snow px-3 py-2.5 text-xs text-quanta-pigeon">
-                      <span className="truncate font-mono text-quanta-denim">
-                        {sourceUrlValue || 'source URL'}
-                      </span>
-                      <Icon name="arrow" className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate font-mono text-quanta-denim">
-                        {(destinationUrlValue || 'destination').replace(
-                          /\/+$/,
-                          '',
-                        )}
-                        /…
-                      </span>
+                    <div className="grid gap-4 md:grid-cols-2 md:items-start">
+                      <AuthenticationFields
+                        prefix="destination"
+                        defaultMode="session"
+                      />
+                      <TextField
+                        label="Destination container URL"
+                        description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
+                        name="destinationUrl"
+                        type="url"
+                        value={destinationUrlValue}
+                        onChange={setDestinationUrlValue}
+                        isRequired
+                      />
                     </div>
+                    <TransferPreview
+                      sourceUrl={sourceUrlValue.trim()}
+                      destinationUrl={destinationUrlValue.trim()}
+                      plan={currentPlan}
+                      thisSiteUrl={destinationUrl}
+                    />
                   </div>
                 </SectionCard>
 
@@ -1152,28 +1508,12 @@ export default function MrScotty() {
                   >
                     {busy ? 'Inspecting…' : 'Inspect transfer'}
                   </Button>
-                  {policy === 'replace' ? (
-                    <Button
-                      type="button"
-                      variant="primary"
-                      accent
-                      isDisabled={busy}
-                      onPress={() => setConfirmOpen(true)}
-                    >
-                      {busy ? 'Working…' : 'Beam content'}
-                    </Button>
-                  ) : (
-                    <Button
-                      type="submit"
-                      name="intent"
-                      value="transfer"
-                      variant="primary"
-                      accent
-                      isDisabled={busy}
-                    >
-                      {busy ? 'Working…' : 'Beam content'}
-                    </Button>
-                  )}
+                  <BeamButton
+                    policy={policy}
+                    busy={busy}
+                    label="Beam content"
+                    onConfirm={() => setConfirmOpen(true)}
+                  />
                   <span className="text-sm text-quanta-pigeon">
                     Inspect is a dry run — nothing is written.
                   </span>
@@ -1193,20 +1533,59 @@ export default function MrScotty() {
                 </p>
               </section>
             )}
-            {hasPlan(result) && <PlanReview result={result} />}
+            {hasPlan(result) && (
+              <PlanReview
+                result={result}
+                beamButton={
+                  <BeamButton
+                    policy={policy}
+                    busy={busy}
+                    label={`Beam ${plural(
+                      result.plan.operations.filter(
+                        (operation) =>
+                          operation.status !== 'reuse' &&
+                          operation.status !== 'skip',
+                      ).length,
+                      'item',
+                    )}`}
+                    onConfirm={() => setConfirmOpen(true)}
+                  />
+                }
+                onEdit={() =>
+                  formTop.current?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'start',
+                  })
+                }
+              />
+            )}
           </TabPanel>
 
-          <TabPanel id="activity" shouldForceMount className="p-0 inert:hidden">
-            <ActivityPanel result={result} jobs={jobs} />
+          <TabPanel
+            id="activity"
+            shouldForceMount
+            className="p-0 [&[inert]]:hidden"
+          >
+            <ActivityPanel
+              result={result}
+              jobs={jobs}
+              thisSiteUrl={destinationUrl}
+            />
           </TabPanel>
         </Tabs>
 
         <ModalSheet
           isOpen={confirmOpen}
           onOpenChange={setConfirmOpen}
-          className="[--modal-max-width:400px]"
+          className="[--modal-max-width:440px]"
         >
-          <Heading slot="title" className="mb-2 text-xl font-bold">
+          <Heading
+            slot="title"
+            className="mb-2 flex items-center gap-2.5 text-xl font-bold"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-quanta-ballet text-quanta-candy">
+              <Icon name="warning" className="h-4 w-4" />
+            </span>
             Confirm replace
           </Heading>
           <p className="text-sm text-quanta-iron">
@@ -1214,6 +1593,39 @@ export default function MrScotty() {
             path, with everything inside it, and recreates it. Structural
             parents and unrelated siblings are left untouched.
           </p>
+          {currentPlan && toReplace ? (
+            toReplace.length > 0 ? (
+              <div className="mt-3 rounded-lg bg-quanta-ballet p-3 text-[13px] text-quanta-candy">
+                <p className="font-semibold">
+                  {plural(toReplace.length, 'item')}{' '}
+                  {toReplace.length === 1 ? 'is' : 'are'} deleted first:
+                </p>
+                <ul className="mt-1 flex max-h-40 flex-col gap-0.5 overflow-auto">
+                  {toReplace.map((operation) => (
+                    <li key={operation.destinationUrl}>
+                      <PathText
+                        path={sitePath(
+                          operation.destinationUrl,
+                          currentPlan.destinationRootUrl,
+                        )}
+                        title={operation.destinationUrl}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="mt-3 rounded-lg bg-quanta-snow p-3 text-[13px] text-quanta-pigeon">
+                The inspection found nothing at these paths, so nothing is
+                deleted.
+              </p>
+            )
+          ) : (
+            <p className="mt-3 rounded-lg bg-quanta-snow p-3 text-[13px] text-quanta-pigeon">
+              Inspect the transfer with Replace first to see exactly which items
+              are deleted.
+            </p>
+          )}
           <div className="mt-6 flex justify-end gap-2">
             <Button
               type="button"

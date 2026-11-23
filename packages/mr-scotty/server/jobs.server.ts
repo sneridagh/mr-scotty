@@ -22,6 +22,9 @@ export interface JobSnapshot {
   status: JobStatus;
   sourceUrl: string;
   destinationUrl: string;
+  /** The sites the content is read from and written to. */
+  sourceRootUrl?: string;
+  destinationRootUrl?: string;
   startedAt: string;
   finishedAt?: string;
   progress: TransferProgress;
@@ -109,6 +112,8 @@ export function startJob(
       status: 'running',
       sourceUrl: plan.sourceUrl,
       destinationUrl: plan.destinationUrl,
+      sourceRootUrl: plan.sourceRootUrl,
+      destinationRootUrl: plan.destinationRootUrl,
       startedAt: new Date().toISOString(),
       progress: { done: 0, total: plan.operations.length },
     },
