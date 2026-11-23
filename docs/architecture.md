@@ -32,6 +32,12 @@ The browser only starts jobs and observes their state.
     Children and image references follow the new id.
   - `replace` deletes the existing item and recreates it, after a confirmation.
   Structural parents are always reused, and a referenced image already at its path with the same UUID is reused under `fail`, `skip`, and `rename`.
+- Every item Mr. Scotty writes, structural parents included, is moved to its source workflow state with workflow transitions.
+  Plone's REST API lists an item's transitions but not where they lead, so Mr. Scotty picks them by target state from Plone's stock workflows (`publish`, `submit`, `retract`, …), taking up to four steps.
+  When the destination workflow cannot reach the state, the item stays where it got to and the report carries a warning; the transfer goes on.
+- Publication and expiry dates (`effective`, `expires`), creators, and contributors are copied, and publishing keeps them.
+  Plone stores dates to the minute.
+  Creation and modification dates are set by the destination, because the REST API does not accept them.
 
 For example, transferring `https://old.example/Plone/news/launch` to `https://new.example/Plone/archive` creates `https://new.example/Plone/archive/news/launch`.
 
@@ -84,7 +90,7 @@ Image and file fields use the standard `download` metadata and base64 upload sha
 TODO:
 
 - Recreate non-image relations in a second pass and rewrite internal links.
-- Preserve workflow state, ownership, creators, dates, ordering, aliases, translations, local roles, and sharing.
+- Preserve creation and modification dates (needs a backend endpoint), ownership, ordering, aliases, translations, local roles, and sharing.
 - Add content-type mapping and project-specific transformer registration.
 - Add querystring preview and bulk dependency planning.
 - Add persistent jobs, SSE progress, cancellation, retry, and restart recovery.

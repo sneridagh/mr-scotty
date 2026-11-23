@@ -11,6 +11,7 @@ Mr.Scotty takes care of beaming up and down Plone content.
 
 - Server-side transfer between `plone.restapi` compliant servers.
 - Source-relative path and UUID preservation.
+- Workflow state, publication dates and creators are kept.
 - Preflight conflict detection and automatic structural parent creation.
 - Conflict policies for content that already exists: fail, skip, update in place, keep both under a new id, or replace.
 - Inline image/file fields and internal image-block dependencies are transferred with their content.

@@ -1,0 +1,1 @@
+Beamed content now arrives in its source workflow state: Mr. Scotty runs the destination workflow transitions after writing each item, structural parents included, and reports a warning when a state cannot be reached. Structural parents also keep the source publication dates. The transfer plan shows each item's target state. @sneridagh
