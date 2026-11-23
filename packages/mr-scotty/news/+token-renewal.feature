@@ -1,0 +1,1 @@
+Bearer tokens are easier to use: the form explains where to copy one from and shows whose it is and when it expires, an expired token is refused before planning, the destination token is renewed through `@login-renew` during long transfers, and a 401 says what to do about it. @sneridagh

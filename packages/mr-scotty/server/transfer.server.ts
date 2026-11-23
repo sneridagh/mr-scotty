@@ -1,3 +1,5 @@
+import { isTokenExpired, readTokenClaims } from '../helpers/token';
+
 export type EndpointAuth =
   | { type: 'anonymous' }
   | { type: 'bearer'; token: string }
@@ -366,6 +368,89 @@ function authorization(auth: EndpointAuth): string | undefined {
   return undefined;
 }
 
+function formatTime(date: Date): string {
+  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/** Explains a 401 in terms of what the person can do about it. */
+function unauthorizedError(
+  url: URL,
+  method: string,
+  auth: EndpointAuth,
+): TransferError {
+  const site = url.origin;
+  let message: string;
+  if (auth.type === 'bearer') {
+    const expiresAt = readTokenClaims(auth.token)?.expiresAt;
+    message =
+      expiresAt && expiresAt.getTime() <= Date.now()
+        ? `${site} refused the token: it expired at ${formatTime(expiresAt)}. Log in to the site again and paste a new token.`
+        : `${site} refused the token for ${method} ${url}. It may have expired, been revoked, or belong to another site. Log in to the site again and paste a new token.`;
+  } else if (auth.type === 'basic') {
+    message = `${site} refused the username and password for ${method} ${url}. People who log in through Google, GitHub or another provider have no Plone password: use a bearer token instead.`;
+  } else {
+    message = `${site} needs a login for ${method} ${url}. Choose a bearer token or a username and password.`;
+  }
+  return new TransferError('unauthorized', message, 401);
+}
+
+/**
+ * Refuses a bearer token that has already expired before any request is
+ * made, so the person learns it at once rather than from a failed request.
+ */
+export function assertTokenUsable(auth: EndpointAuth, label: string) {
+  if (auth.type !== 'bearer') return;
+  const expiresAt = readTokenClaims(auth.token)?.expiresAt;
+  if (expiresAt && isTokenExpired(auth.token)) {
+    throw new TransferError(
+      'token_expired',
+      `The ${label} token expired at ${formatTime(expiresAt)}. Log in to the site again and paste a new token.`,
+      401,
+    );
+  }
+}
+
+/**
+ * How long before it expires a bearer token is renewed during a transfer.
+ * Plone tokens last 12 hours by default.
+ */
+const TOKEN_RENEW_MARGIN_MS = 10 * 60 * 1000;
+
+/**
+ * Renews a bearer token through plone.restapi's `@login-renew` when it
+ * expires within the margin. The new token replaces `auth.token` in place, so
+ * every later request of the run uses it. Tokens that are not JWTs, or carry
+ * no expiry, are left alone.
+ */
+async function renewTokenIfDue(
+  auth: EndpointAuth,
+  rootUrl: URL,
+  fetchImpl: Fetch,
+): Promise<'renewed' | 'not_due'> {
+  if (auth.type !== 'bearer') return 'not_due';
+  const expiresAt = readTokenClaims(auth.token)?.expiresAt;
+  if (!expiresAt) return 'not_due';
+  const left = expiresAt.getTime() - Date.now();
+  // An expired token cannot be renewed; the next request explains the 401.
+  if (left <= 0 || left > TOKEN_RENEW_MARGIN_MS) return 'not_due';
+
+  const renewed = await requestJson(
+    apiUrlAtRoot(rootUrl, rootUrl, '@login-renew'),
+    auth,
+    fetchImpl,
+    { method: 'POST' },
+  );
+  if (typeof renewed.token !== 'string' || !renewed.token) {
+    throw new TransferError(
+      'token_renewal_failed',
+      `${rootUrl.origin} answered @login-renew without a token.`,
+      502,
+    );
+  }
+  auth.token = renewed.token;
+  return 'renewed';
+}
+
 /**
  * Whether a redirect sends an `++api++` request to the same path without it,
  * which is how a frontend that does not proxy the REST API answers.
@@ -413,6 +498,10 @@ async function requestJson(
       `The REST API redirected ${url}. Redirects are not followed for server-side transfer requests.`,
       502,
     );
+  }
+
+  if (response.status === 401) {
+    throw unauthorizedError(url, init.method || 'GET', auth);
   }
 
   if (!response.ok) {
@@ -706,6 +795,10 @@ async function requestBinary(
       `The resource request redirected ${url}. Redirects are not followed for server-side transfer requests.`,
       502,
     );
+  }
+
+  if (response.status === 401) {
+    throw unauthorizedError(url, 'GET', auth);
   }
 
   if (!response.ok) {
@@ -1007,6 +1100,8 @@ export async function createTransferPlan(
   // source and destination hosts covers every outbound request the plan makes.
   assertHostAllowed(sourceUrl, 'Source URL', policy);
   assertHostAllowed(destinationUrl, 'Destination URL', policy);
+  assertTokenUsable(input.sourceAuth, 'source');
+  assertTokenUsable(input.destinationAuth, 'destination');
   const source = await readContentAndRoot(
     sourceUrl,
     input.sourceAuth,
@@ -1645,6 +1740,26 @@ export async function executeTransferPlan(
     };
   };
 
+  // A long run can outlast the destination token: renew it shortly before it
+  // expires. If renewal fails, the run carries on with the old token, which
+  // still works until it expires.
+  let renewalFailed = false;
+  const keepTokenFresh = async () => {
+    if (renewalFailed) return;
+    try {
+      await renewTokenIfDue(destinationAuth, destinationRoot, fetchImpl);
+    } catch (error) {
+      renewalFailed = true;
+      report.warnings.push({
+        destinationUrl: plan.destinationRootUrl,
+        code: 'token_renewal_failed',
+        message: `Could not renew the destination token, so the transfer goes on with the current one until it expires: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
+  };
+
   const total = plan.operations.length;
   let done = 0;
   operations: for (const operation of plan.operations) {
@@ -1652,6 +1767,7 @@ export async function executeTransferPlan(
       report.cancelled = true;
       break;
     }
+    await keepTokenFresh();
     onProgress?.({
       done,
       total,
@@ -1780,6 +1896,7 @@ export async function executeTransferPlan(
     await alignState(operation);
   }
 
+  await keepTokenFresh();
   await restoreOrder();
   onProgress?.({
     done: report.failed ? done - 1 : report.cancelled ? done : total,

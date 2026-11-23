@@ -395,6 +395,60 @@ test.describe('Mr. Scotty', () => {
     expect(sibling.title).toBe('Unrelated destination sibling');
   });
 
+  test('describes a pasted bearer token and flags an expired one', async ({
+    page,
+  }) => {
+    const sourceApiURL = getDefaultSourceApiURL();
+    const documentId = `mr-scotty-token-${Date.now()}`;
+    await createContent(
+      page,
+      {
+        contentType: 'Document',
+        contentId: documentId,
+        contentTitle: 'Token',
+      },
+      { apiURL: sourceApiURL, username: 'admin', password: 'secret' },
+    );
+    const response = await page.request.post(
+      apiContentURL(sourceApiURL, '@login'),
+      {
+        headers: { Accept: 'application/json' },
+        data: { login: 'admin', password: 'secret' },
+      },
+    );
+    const { token: sourceToken } = (await response.json()) as {
+      token: string;
+    };
+
+    await login(page);
+    await page.goto('/mr-scotty');
+    await waitForMrScottyHydration(page);
+    await typeSourceUrl(page, `${sourceApiURL}/${documentId}`);
+    await page
+      .getByRole('button', { name: /Connection/ })
+      .first()
+      .click();
+    await page.getByRole('option', { name: 'Bearer token' }).click();
+    const tokenField = page.getByLabel('Source bearer token');
+    await expect(
+      page.getByText(/copy the token from its cookies/).first(),
+    ).toBeVisible();
+
+    // A token that expired an hour ago.
+    const claims = btoa(
+      JSON.stringify({ sub: 'admin', exp: Math.floor(Date.now() / 1000) - 3600 }),
+    ).replace(/=+$/, '');
+    await tokenField.fill(`e30.${claims}.signature`);
+    await expect(page.getByText(/This token expired on/)).toBeVisible();
+
+    // The source's own token is read, and the private document is planned.
+    await tokenField.fill(sourceToken);
+    await expect(page.getByText(/Token for admin\. Expires on/)).toBeVisible();
+    await page.getByRole('button', { name: 'Inspect transfer' }).click();
+    await expect(page.getByText('Transfer plan')).toBeVisible();
+    await expect(page.getByRole('gridcell', { name: 'create' })).toHaveCount(1);
+  });
+
   test('beams a folder with everything inside, in its order', async ({
     page,
   }) => {

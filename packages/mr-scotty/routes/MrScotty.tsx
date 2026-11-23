@@ -67,6 +67,7 @@ import {
   type TransferReport,
 } from '../server/transfer.server';
 import BeamIcon from '../components/BeamIcon';
+import { describeToken } from '../helpers/token';
 
 type AuthMode = 'anonymous' | 'session' | 'bearer' | 'basic';
 const CONFLICT_POLICIES: ReadonlyArray<{
@@ -324,6 +325,31 @@ function Icon({ name, className }: { name: IconName; className?: string }) {
   return <Component aria-hidden className={className} />;
 }
 
+function TokenField({
+  prefix,
+  label,
+}: {
+  prefix: 'source' | 'destination';
+  label: string;
+}) {
+  const [token, setToken] = useState('');
+  const { description, expired } = describeToken(token, prefix);
+  return (
+    <TextField
+      label={`${label} bearer token`}
+      name={`${prefix}Token`}
+      type="password"
+      autoComplete="off"
+      isRequired
+      value={token}
+      onChange={setToken}
+      isInvalid={expired}
+      errorMessage={expired ? description : undefined}
+      description={expired ? undefined : description}
+    />
+  );
+}
+
 function AuthenticationFields({
   prefix,
   defaultMode,
@@ -355,15 +381,7 @@ function AuthenticationFields({
         <SelectItem id="basic">Username and password</SelectItem>
       </Select>
 
-      {mode === 'bearer' && (
-        <TextField
-          label={`${label} bearer token`}
-          name={`${prefix}Token`}
-          type="password"
-          autoComplete="off"
-          isRequired
-        />
-      )}
+      {mode === 'bearer' && <TokenField prefix={prefix} label={label} />}
       {mode === 'basic' && (
         <div className="grid gap-3 sm:grid-cols-2">
           <TextField

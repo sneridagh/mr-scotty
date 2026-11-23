@@ -1122,6 +1122,146 @@ describe('replace safety', () => {
   });
 });
 
+function base64Url(value: string): string {
+  return btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** A Plone-like JWT that expires `seconds` from now. */
+function tokenExpiringIn(seconds: number, sub = 'admin'): string {
+  const exp = Math.floor(Date.now() / 1000) + seconds;
+  return [
+    base64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' })),
+    base64Url(JSON.stringify({ sub, exp })),
+    'signature',
+  ].join('.');
+}
+
+/** `successfulFetch`, plus `@login-renew`, recording each write's token. */
+function renewingFetch(renew: () => Response) {
+  const inner = successfulFetch();
+  const writes: string[] = [];
+  const renewals: string[] = [];
+  const fetchImpl = vi.fn(
+    async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      const authorization = new Headers(init?.headers).get('Authorization');
+      if (url.pathname.endsWith('/@login-renew')) {
+        renewals.push(authorization ?? '');
+        return renew();
+      }
+      if (init?.method === 'POST') writes.push(authorization ?? '');
+      return inner(resource, init);
+    },
+  );
+  return { fetchImpl: fetchImpl as typeof fetch, writes, renewals };
+}
+
+describe('tokens', () => {
+  test('renews a destination token that is about to expire', async () => {
+    const oldToken = tokenExpiringIn(5 * 60);
+    const newToken = tokenExpiringIn(12 * 60 * 60);
+    const auth = { type: 'bearer' as const, token: oldToken };
+    const { fetchImpl, writes, renewals } = renewingFetch(() =>
+      json({ token: newToken }),
+    );
+    const plan = await createTransferPlan(
+      { ...input, destinationAuth: auth },
+      fetchImpl,
+    );
+
+    const report = await executeTransferPlan(plan, auth, fetchImpl);
+
+    expect(report.failed).toBeUndefined();
+    expect(report.warnings.map((warning) => warning.code)).not.toContain(
+      'token_renewal_failed',
+    );
+    expect(renewals).toEqual([`Bearer ${oldToken}`]);
+    expect(writes).toEqual([`Bearer ${newToken}`, `Bearer ${newToken}`]);
+    expect(auth.token).toBe(newToken);
+  });
+
+  test('leaves a token with hours left alone', async () => {
+    const token = tokenExpiringIn(6 * 60 * 60);
+    const auth = { type: 'bearer' as const, token };
+    const { fetchImpl, renewals } = renewingFetch(() => json({}, 500));
+    const plan = await createTransferPlan(
+      { ...input, destinationAuth: auth },
+      fetchImpl,
+    );
+
+    await executeTransferPlan(plan, auth, fetchImpl);
+
+    expect(renewals).toEqual([]);
+    expect(auth.token).toBe(token);
+  });
+
+  test('carries on with a warning when renewal fails', async () => {
+    const token = tokenExpiringIn(5 * 60);
+    const auth = { type: 'bearer' as const, token };
+    const { fetchImpl, writes, renewals } = renewingFetch(() =>
+      json({ error: { message: 'Nope' } }, 500),
+    );
+    const plan = await createTransferPlan(
+      { ...input, destinationAuth: auth },
+      fetchImpl,
+    );
+
+    const report = await executeTransferPlan(plan, auth, fetchImpl);
+
+    expect(report.failed).toBeUndefined();
+    expect(report.created).toHaveLength(2);
+    expect(renewals).toHaveLength(1);
+    expect(writes).toEqual([`Bearer ${token}`, `Bearer ${token}`]);
+    expect(
+      report.warnings.filter(
+        (warning) => warning.code === 'token_renewal_failed',
+      ),
+    ).toHaveLength(1);
+  });
+
+  test('refuses an expired token before any request', async () => {
+    const fetchImpl = vi.fn();
+    const error = await createTransferPlan(
+      {
+        ...input,
+        sourceAuth: { type: 'bearer', token: tokenExpiringIn(-60) },
+      },
+      fetchImpl as unknown as typeof fetch,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TransferError);
+    expect(error).toMatchObject({ code: 'token_expired', status: 401 });
+    expect((error as Error).message).toContain('source token expired');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [{ type: 'bearer' as const, token: 'revoked' }, 'paste a new token'],
+    [
+      { type: 'basic' as const, username: 'ana', password: 'x' },
+      'have no Plone password',
+    ],
+    [{ type: 'anonymous' as const }, 'needs a login'],
+  ])('explains a 401 for %o', async (destinationAuth, hint) => {
+    const fetchImpl = vi.fn(async (resource: RequestInfo | URL) => {
+      const url = new URL(String(resource));
+      if (url.origin === 'https://new.example') {
+        return json({ type: 'Unauthorized' }, 401);
+      }
+      return successfulFetch()(resource);
+    });
+
+    const error = await createTransferPlan(
+      { ...input, destinationAuth },
+      fetchImpl as typeof fetch,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'unauthorized', status: 401 });
+    expect((error as Error).message).toContain('https://new.example');
+    expect((error as Error).message).toContain(hint);
+  });
+});
+
 describe('SSRF policy', () => {
   function thrown(fn: () => void): TransferError {
     try {
