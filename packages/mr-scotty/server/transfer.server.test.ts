@@ -457,6 +457,37 @@ describe('destination existence check', () => {
   });
 });
 
+describe('redirects', () => {
+  function redirectingSource(location: string) {
+    return vi.fn(
+      async () =>
+        new Response(null, { status: 302, headers: { Location: location } }),
+    );
+  }
+
+  test('explains a frontend that does not serve the REST API', async () => {
+    // Aurora answers /++api++/news/launch with a redirect to /news/launch.
+    await expect(
+      createTransferPlan(
+        { ...input, sourceUrl: 'https://old.example/news/launch' },
+        redirectingSource('/news/launch') as typeof fetch,
+      ),
+    ).rejects.toMatchObject({
+      code: 'restapi_not_exposed',
+      message: expect.stringContaining('Use the Plone backend URL instead.'),
+    });
+  });
+
+  test('still rejects any other redirect', async () => {
+    await expect(
+      createTransferPlan(
+        input,
+        redirectingSource('https://elsewhere.example/login') as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'redirect_rejected' });
+  });
+});
+
 describe('executeTransferPlan', () => {
   test('creates structural parents before the selected content', async () => {
     const fetchImpl = successfulFetch();
