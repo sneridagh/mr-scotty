@@ -38,6 +38,10 @@ The browser only starts jobs and observes their state.
     Children and image references follow the new id.
   - `replace` deletes the existing item and recreates it, after a confirmation.
   Structural parents are always reused, and a referenced image already at its path with the same UUID is reused under `fail`, `skip`, and `rename`.
+- Content types are checked during preflight against the destination's `@types`.
+  An item whose type the destination lacks is flagged, and nothing is beamed until each such type has a choice: beam its items as one of the destination's types, or skip them and everything inside them.
+  A mapped item keeps its fields; the plan lists the source fields with a value that the chosen type has no field for, because Plone drops them silently.
+  The choice only checks that the type exists, not that the destination folder allows it.
 - With **Include everything inside**, Mr. Scotty also beams everything inside the selected item, folder by folder, as the source connection can see it: read anonymously, private items are left out.
   Each folder's children are read a page at a time, in their order, and the destination folder ends up in the same order.
   Referenced items are written before the content that references them, so relations resolve; the folders are then put back in source order.

@@ -34,6 +34,11 @@ export interface TransferInput {
    */
   includeChildren?: boolean;
   /**
+   * What to do with content types the destination does not have: beam them
+   * as another type, or `null` to skip them and everything inside them.
+   */
+  typeMap?: Record<string, string | null>;
+  /**
    * The most items a plan may write or check. Defaults to
    * `MR_SCOTTY_MAX_ITEMS`, or 500.
    */
@@ -84,12 +89,47 @@ export interface TransferOperation {
   position?: number;
   /** For `rename`: the taken URL the item was moved away from. */
   renamedFrom?: string;
+  /** The source type, when the item is beamed as another `type`. */
+  sourceType?: string;
+  /**
+   * Set when the destination has no such type and nothing was chosen for
+   * it yet. A plan with such items cannot be beamed.
+   */
+  missingType?: boolean;
+  /**
+   * Why a `skip` is skipped, when it is not because it exists: its type was
+   * skipped, or it is inside an item that was.
+   */
+  skipReason?: 'type' | 'parent';
   /**
    * The source's workflow state, which a written item is moved to with
    * workflow transitions once it exists.
    */
   reviewState?: string;
   payload?: Record<string, unknown>;
+}
+
+/** A destination content type. */
+export interface DestinationType {
+  id: string;
+  title: string;
+}
+
+/**
+ * A source type the destination does not have, or one the person mapped,
+ * and what happens to its items.
+ */
+export interface TypeIssue {
+  sourceType: string;
+  /** How many items in the plan have it. */
+  count: number;
+  /**
+   * The destination type its items are beamed as; `null` skips them; unset
+   * until someone chooses.
+   */
+  mappedTo?: string | null;
+  /** Source fields the chosen type has no field for: Plone drops them. */
+  droppedFields?: string[];
 }
 
 export interface DestinationSite {
@@ -110,6 +150,13 @@ export interface TransferPlan {
    * nothing is written there.
    */
   destinationSite?: DestinationSite;
+  /**
+   * Types the destination lacks, or that were mapped. Empty or missing when
+   * every type exists there.
+   */
+  typeIssues?: TypeIssue[];
+  /** The destination's types, to map missing ones to. */
+  destinationTypes?: DestinationType[];
   sourceRelativePath: string;
   destinationPath: string;
   conflictPolicy: ConflictPolicy;
@@ -1116,6 +1163,79 @@ async function readDestinationSite(
   return { siteUrl, ...(frontendUrl ? { frontendUrl } : {}) };
 }
 
+/**
+ * The destination's content types, or undefined when it does not list them,
+ * in which case the plan does not check types.
+ */
+async function readDestinationTypes(
+  rootUrl: URL,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<DestinationType[] | undefined> {
+  let listing: unknown;
+  try {
+    listing = await requestJson(
+      apiUrlAtRoot(rootUrl, rootUrl, '@types'),
+      auth,
+      fetchImpl,
+    );
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(listing)) return undefined;
+  return listing.flatMap((entry: unknown) => {
+    if (!isRecord(entry) || typeof entry['@id'] !== 'string') return [];
+    const id = decodeURIComponent(entry['@id'].split('/').at(-1) as string);
+    return [{ id, title: typeof entry.title === 'string' ? entry.title : id }];
+  });
+}
+
+/** The field names of a type's schema, or undefined when it can't be read. */
+async function readTypeFields(
+  rootUrl: URL,
+  type: string,
+  auth: EndpointAuth,
+  fetchImpl: Fetch,
+): Promise<Set<string> | undefined> {
+  try {
+    const schema = await requestJson(
+      apiUrlAtRoot(rootUrl, rootUrl, '@types', type),
+      auth,
+      fetchImpl,
+    );
+    return isRecord(schema.properties)
+      ? new Set(Object.keys(schema.properties))
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
+/** Refuses a plan with items whose type the destination lacks. */
+export function assertTypesResolved(plan: TransferPlan) {
+  const unresolved = (plan.typeIssues ?? []).filter(
+    (issue) => issue.mappedTo === undefined,
+  );
+  if (unresolved.length > 0) {
+    throw new TransferError(
+      'missing_types',
+      `The destination has no ${unresolved
+        .map((issue) => issue.sourceType)
+        .join(
+          ', ',
+        )} type. Choose a type to beam those items as, or skip them, and inspect again.`,
+      409,
+    );
+  }
+}
+
 export function readMaxItemsFromEnv(
   env: Record<string, string | undefined> = currentEnv(),
 ): number {
@@ -1183,6 +1303,28 @@ export async function createTransferPlan(
       'destination_not_folderish',
       `Destination ${destinationUrl} is not a container.`,
     );
+  }
+
+  const typeMap = input.typeMap ?? {};
+  const destinationTypes = await readDestinationTypes(
+    destination.rootUrl,
+    input.destinationAuth,
+    fetchImpl,
+  );
+  const destinationTypeIds = destinationTypes
+    ? new Set(destinationTypes.map((type) => type.id))
+    : undefined;
+  for (const [sourceType, target] of Object.entries(typeMap)) {
+    if (
+      target !== null &&
+      destinationTypeIds &&
+      !destinationTypeIds.has(target)
+    ) {
+      throw new TransferError(
+        'invalid_type_mapping',
+        `${sourceType} cannot be beamed as ${target}: the destination has no such type.`,
+      );
+    }
   }
 
   const segments = relativeSegments(source.rootUrl, sourceUrl);
@@ -1354,11 +1496,18 @@ export async function createTransferPlan(
     status: TransferOperation['status'];
     renamedFrom?: string;
     newUid: boolean;
+    /** The type it is written as. */
+    targetType: string;
+    missingType?: boolean;
+    skipReason?: TransferOperation['skipReason'];
   };
   const destinationBySourceUrl = new Map<string, string>();
   const planned: PlannedNode[] = [];
   // Items that were renamed, and everything written inside them.
   const inRenamedCopy = new Set<string>();
+  // Items skipped for their type, and everything inside them.
+  const skippedForType = new Set<string>();
+  const typeIssues = new Map<string, TypeIssue>();
   // Parents before children, and referenced items before the content that
   // references them, so relations resolve. Siblings otherwise keep the source
   // order (the sort is stable); the executor restores it where references
@@ -1390,6 +1539,53 @@ export async function createTransferPlan(
       destinationParentUrl,
       node.segments.at(-1) as string,
     );
+
+    // Content of a type the destination lacks is beamed as the type chosen
+    // for it, skipped, or flagged until someone chooses.
+    let targetType = identity.type;
+    let missingType = false;
+    let skipReason: PlannedNode['skipReason'];
+    if (skippedForType.has(parentKey)) {
+      skipReason = 'parent';
+    } else if (node.kind === 'content') {
+      const mapped = Object.hasOwn(typeMap, identity.type)
+        ? typeMap[identity.type]
+        : undefined;
+      const missing =
+        destinationTypeIds !== undefined &&
+        !destinationTypeIds.has(identity.type);
+      if (missing || mapped !== undefined) {
+        const issue = typeIssues.get(identity.type) ?? {
+          sourceType: identity.type,
+          count: 0,
+          ...(mapped === undefined ? {} : { mappedTo: mapped }),
+        };
+        issue.count += 1;
+        typeIssues.set(identity.type, issue);
+        if (mapped === null) skipReason = 'type';
+        else if (mapped) targetType = mapped;
+        else missingType = true;
+      }
+    }
+    if (skipReason) {
+      skippedForType.add(node.sourceUrl.toString());
+      destinationBySourceUrl.set(
+        node.sourceUrl.toString(),
+        destinationItemUrl.toString(),
+      );
+      planned.push({
+        node,
+        identity,
+        destinationItemUrl,
+        destinationParentUrl,
+        status: 'skip',
+        newUid: false,
+        targetType,
+        skipReason,
+      });
+      continue;
+    }
+
     const existing = await contentExists(
       destinationItemUrl,
       destination.rootUrl,
@@ -1435,10 +1631,10 @@ export async function createTransferPlan(
     } else if (conflictPolicy === 'replace') {
       status = 'replace';
     } else if (conflictPolicy === 'update') {
-      if (existing['@type'] !== identity.type) {
+      if (existing['@type'] !== targetType) {
         throw new TransferError(
           'type_mismatch',
-          `The ${String(existing['@type'])} at ${destinationItemUrl} cannot be updated from a ${identity.type}. Replace or rename it instead.`,
+          `The ${String(existing['@type'])} at ${destinationItemUrl} cannot be updated from a ${targetType}. Replace or rename it instead.`,
           409,
         );
       }
@@ -1494,6 +1690,8 @@ export async function createTransferPlan(
       status,
       renamedFrom,
       newUid,
+      targetType,
+      ...(missingType ? { missingType } : {}),
     });
   }
 
@@ -1525,6 +1723,7 @@ export async function createTransferPlan(
           item.destinationItemUrl.pathname.split('/').at(-1) as string,
         );
       }
+      if (item.targetType !== identity.type) payload['@type'] = item.targetType;
       if (item.newUid) delete payload.UID;
       if (status === 'update') {
         // The existing item keeps its type, id and UUID.
@@ -1539,6 +1738,12 @@ export async function createTransferPlan(
       destinationUrl: item.destinationItemUrl.toString(),
       destinationParentUrl: item.destinationParentUrl.toString(),
       ...identity,
+      type: item.targetType,
+      ...(item.targetType === identity.type
+        ? {}
+        : { sourceType: identity.type }),
+      ...(item.missingType ? { missingType: true } : {}),
+      ...(item.skipReason ? { skipReason: item.skipReason } : {}),
       kind: node.kind,
       status,
       ...(item.renamedFrom ? { renamedFrom: item.renamedFrom } : {}),
@@ -1550,7 +1755,45 @@ export async function createTransferPlan(
     });
   }
 
+  // For each mapped type: the source fields with a value that the chosen
+  // type has no field for, which Plone drops silently.
+  for (const issue of typeIssues.values()) {
+    if (typeof issue.mappedTo !== 'string') continue;
+    const targetFields = await readTypeFields(
+      destination.rootUrl,
+      issue.mappedTo,
+      input.destinationAuth,
+      fetchImpl,
+    );
+    if (!targetFields) continue;
+    const sourceFields = await readTypeFields(
+      source.rootUrl,
+      issue.sourceType,
+      input.sourceAuth,
+      fetchImpl,
+    );
+    const dropped = new Set<string>();
+    for (const operation of operations) {
+      if (operation.sourceType !== issue.sourceType || !operation.payload)
+        continue;
+      for (const [field, value] of Object.entries(operation.payload)) {
+        if (field.startsWith('@') || field === 'UID' || field === 'id')
+          continue;
+        if (targetFields.has(field) || !hasValue(value)) continue;
+        if (sourceFields && !sourceFields.has(field)) continue;
+        dropped.add(field);
+      }
+    }
+    issue.droppedFields = [...dropped].sort();
+  }
+
   return {
+    ...(typeIssues.size > 0
+      ? {
+          typeIssues: [...typeIssues.values()],
+          ...(destinationTypes ? { destinationTypes } : {}),
+        }
+      : {}),
     sourceUrl: sourceUrl.toString(),
     sourceRootUrl: source.rootUrl.toString(),
     destinationUrl: destinationUrl.toString(),
@@ -1683,6 +1926,7 @@ export async function executeTransferPlan(
   fetchImpl: Fetch = fetch,
   { onProgress, signal }: ExecuteOptions = {},
 ): Promise<TransferReport> {
+  assertTypesResolved(plan);
   const selectedOperation = plan.operations.find(
     (operation) => operation.sourceUrl === plan.sourceUrl,
   );
