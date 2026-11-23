@@ -1,0 +1,1 @@
+Replace now backs up the files and images of the item it deletes, and puts the item back in its workflow state if recreating fails. If the item cannot be backed up, it is left in place instead of being deleted. @sneridagh

@@ -89,14 +89,17 @@ environment so local development and acceptance tests keep working unconfigured:
 - `MR_SCOTTY_MAX_ITEMS` — the most items one transfer may include (500 by
   default).
 
-A destructive `replace` captures the existing content before deleting it and
-restores it best-effort if the recreate fails; when an operation fails mid-run,
-the executor returns a partial report naming what was written rather than
-discarding the progress.
+A destructive `replace` backs up the existing item before deleting it,
+downloading its files and images too; if the backup fails, the item is left in
+place and the transfer stops (`backup_failed`). If the recreate fails, the
+backup is created again, with its UUID, and moved back to its workflow state.
+Only the item itself is backed up: anything inside it is deleted with it and
+not restored. When an operation fails mid-run, the executor returns a partial
+report naming what was written rather than discarding the progress.
 
 Before production use, still add DNS rebinding protection (resolve-and-pin),
 request and content size limits, audit logs, encrypted durable secret handling,
-and restore of binary fields on a rolled-back replace.
+and restoring what was inside a rolled-back replace.
 
 ## Fidelity roadmap
 

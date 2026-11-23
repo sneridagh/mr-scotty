@@ -114,7 +114,7 @@ const CONFLICT_POLICIES: ReadonlyArray<{
     badge: 'destructive',
     badgeClassName: 'bg-quanta-ballet text-quanta-candy',
     description:
-      'Delete the item at the source-relative path, then recreate it. Unrelated siblings and parents are preserved. Confirmed before it runs.',
+      'Delete the item at the source-relative path, with everything inside it, then recreate it. Unrelated siblings and parents are preserved. Confirmed before it runs.',
   },
 ];
 
@@ -663,8 +663,9 @@ function PlanReview({ result }: { result: PlanResult }) {
         {replacements > 0 && !started && (
           <Callout tone="warning">
             <b className="font-semibold">Replace</b> deletes the existing item
-            at its path before recreating it. You confirm this before anything
-            is written.
+            at its path, with everything inside it, before recreating it. If
+            recreating fails, the item is put back with its files, but not what
+            was inside it. You confirm this before anything is written.
           </Callout>
         )}
         {started && (
@@ -1192,8 +1193,8 @@ export default function MrScotty() {
           </Heading>
           <p className="text-sm text-quanta-iron">
             This transfer deletes the existing content at the source-relative
-            path and recreates it. Structural parents and unrelated siblings are
-            left untouched.
+            path, with everything inside it, and recreates it. Structural
+            parents and unrelated siblings are left untouched.
           </p>
           <div className="mt-6 flex justify-end gap-2">
             <Button

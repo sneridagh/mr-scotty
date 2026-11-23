@@ -1692,22 +1692,38 @@ export async function executeTransferPlan(
     }
 
     if (operation.status === 'replace') {
-      // Capture the existing content first so a failed recreate can be rolled
-      // back. Binary fields are not restored by this path (no base64 data is
-      // kept), which is tracked in the fidelity roadmap.
-      let restorePayload: Record<string, unknown> | undefined;
+      // Back up the existing item, its files and images included, so a
+      // failed recreate can put it back. Without a backup nothing is deleted.
+      let restorePayload: Record<string, unknown>;
+      let restoreState: string | undefined;
       try {
         const existing = await requestJson(
           apiUrlAtRoot(new URL(operation.destinationUrl), destinationRoot),
           destinationAuth,
           fetchImpl,
         );
-        restorePayload = createContentPayload(
+        restorePayload = await prepareContentPayload(
           existing,
           new URL(operation.destinationUrl),
+          destinationAuth,
+          fetchImpl,
         );
-      } catch {
-        restorePayload = undefined;
+        restoreState =
+          typeof existing.review_state === 'string'
+            ? existing.review_state
+            : undefined;
+      } catch (error) {
+        recordFailure(
+          operation,
+          new TransferError(
+            'backup_failed',
+            `Could not back up ${operation.destinationUrl} before replacing it, so it was left in place: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            502,
+          ),
+        );
+        break operations;
       }
 
       try {
@@ -1728,17 +1744,25 @@ export async function executeTransferPlan(
       try {
         await createAt(operation.destinationParentUrl, operation.payload);
       } catch (error) {
-        // The original is gone; best-effort restore from the captured payload.
+        // The original is gone; put it back from the backup, in its state.
         let restored = false;
-        if (restorePayload) {
-          try {
-            await createAt(operation.destinationParentUrl, restorePayload);
-            restored = true;
-          } catch {
-            restored = false;
-          }
+        try {
+          await createAt(operation.destinationParentUrl, restorePayload);
+          restored = true;
+        } catch {
+          restored = false;
         }
         recordFailure(operation, error, restored);
+        if (restored && restoreState) {
+          const warning = await alignReviewState(
+            new URL(operation.destinationUrl),
+            restoreState,
+            destinationRoot,
+            destinationAuth,
+            fetchImpl,
+          );
+          if (warning) report.warnings.push(warning);
+        }
         break operations;
       }
       report.replaced.push(reportItem(operation));
@@ -1750,7 +1774,7 @@ export async function executeTransferPlan(
       await createAt(operation.destinationParentUrl, operation.payload);
     } catch (error) {
       recordFailure(operation, error);
-      return report;
+      break operations;
     }
     report.created.push(reportItem(operation));
     await alignState(operation);
