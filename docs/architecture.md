@@ -22,6 +22,12 @@ The browser only starts jobs and observes their state.
   `/Plone` are also supported (`/Plone/++api++/item`).
 - Aurora's session token is reused only for its configured Plone destination.
   A source or destination may instead use anonymous, bearer-token, or Basic authentication.
+- A bearer token is a plone.restapi token. People who log in through Google, GitHub or another provider have no Plone password, so a token is how Mr. Scotty reaches their sites: they log in in the browser and copy it from the site's cookies (`auth_token` on Volto sites, `auth_seven` on Aurora sites).
+  - The form reads the token's claims and shows whose it is and when it expires, or that it has expired. The signature is not checked: only the issuing site can do that.
+  - Planning refuses an expired token before any request.
+  - During a transfer, the destination token is renewed through `@login-renew` when it has less than 10 minutes left, and the new token is used for the rest of the run. If renewal fails, the run carries on with the old token and reports a `token_renewal_failed` warning. With the JWT plugin's `store_tokens` on, renewal ends the token's other uses, such as the browser session it was copied from; it is off by default.
+  - A 401 explains what to do: paste a new token, or use a token instead of a password for people who log in through a provider.
+  - Logging in through the remote site's own login page is a wish: see [#13](https://github.com/sneridagh/mr-scotty/issues/13).
 - When content already exists at its destination path, the conflict policy decides what happens:
   - `fail` (the default) aborts during preflight, before any write.
   - `skip` leaves the existing item untouched and beams the rest.
