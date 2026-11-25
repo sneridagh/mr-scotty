@@ -593,6 +593,15 @@ async function requestJson(
   }
 
   if (response.status === 204) return {};
+  const contentType = response.headers.get('Content-Type');
+  if (contentType && !contentType.includes('json')) {
+    // A frontend answering with its HTML page.
+    throw new TransferError(
+      'restapi_not_json',
+      `${init.method || 'GET'} ${url} answered with ${contentType}, not JSON.`,
+      502,
+    );
+  }
   return (await response.json()) as ContentRecord;
 }
 
@@ -653,6 +662,26 @@ function appendPath(base: URL, ...segments: string[]): URL {
   return result;
 }
 
+/**
+ * Sites that serve the REST API on their plain content URLs and have no
+ * `++api++` traversal, such as Nick. Keyed by `rootKey`, and filled when a
+ * site's content is first read.
+ */
+const DIRECT_API_ROOTS_KEY = Symbol.for('mr-scotty.direct-api-roots');
+function directApiRoots(): Set<string> {
+  const holder = globalThis as unknown as Record<symbol, Set<string>>;
+  holder[DIRECT_API_ROOTS_KEY] ??= new Set();
+  return holder[DIRECT_API_ROOTS_KEY];
+}
+
+function rootKey(url: URL): string {
+  return `${url.origin}${canonicalizePathname(url.pathname)}`;
+}
+
+function servesApiDirectly(rootUrl: URL): boolean {
+  return directApiRoots().has(rootKey(rootUrl));
+}
+
 function apiUrl(contentUrl: URL, ...segments: string[]): URL {
   const result = new URL(contentUrl);
   const contentPath = canonicalizePathname(result.pathname);
@@ -670,6 +699,11 @@ function apiUrlAtRoot(
   const result = new URL(contentUrl);
   const rootPath = rootUrl.pathname.replace(/\/+$/, '') || '/';
   const contentPath = canonicalizePathname(result.pathname);
+
+  if (servesApiDirectly(rootUrl)) {
+    result.pathname = contentPath;
+    return appendPath(result, ...segments);
+  }
 
   if (rootPath === '/') return apiUrl(contentUrl, ...segments);
 
@@ -758,6 +792,26 @@ async function readContentAndRoot(
     }
   }
 
+  // Servers such as Nick serve the REST API on the plain content URL, with no
+  // `++api++` traversal. Plone does too, so this is only tried last, and its
+  // own failure (a frontend's HTML page, say) is reported as the first one.
+  let direct = false;
+  if (!content) {
+    const plain = new URL(contentUrl);
+    plain.pathname = canonicalizePathname(plain.pathname);
+    plain.search = '';
+    plain.hash = '';
+    const expandedUrl = new URL(plain);
+    expandedUrl.searchParams.set('expand', 'navroot');
+    try {
+      content = await requestJson(expandedUrl, auth, fetchImpl);
+      successfulCandidate = plain;
+      direct = true;
+    } catch (error) {
+      if (error instanceof TransferError && error.status === 401) throw error;
+    }
+  }
+
   if (!content || !successfulCandidate) throw firstError;
 
   let rootId = navrootId(content);
@@ -780,7 +834,10 @@ async function readContentAndRoot(
     );
   }
 
-  return { content, rootUrl: rebaseApiUrl(rootId, contentUrl) };
+  const rootUrl = rebaseApiUrl(rootId, contentUrl);
+  if (direct) directApiRoots().add(rootKey(rootUrl));
+  else directApiRoots().delete(rootKey(rootUrl));
+  return { content, rootUrl };
 }
 
 function getIdentity(content: ContentRecord, url: URL) {
@@ -993,7 +1050,11 @@ function collectImageReferences(
       }
     }
 
-    if (key === 'image' || key === 'preview_image') {
+    if (
+      key === 'image' ||
+      key === 'preview_image' ||
+      key === 'preview_image_link'
+    ) {
       const relationId = internalContentUrl(value['@id'], sourceUrl);
       if (relationId) {
         references.push({
@@ -1018,7 +1079,7 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function setPath(value: unknown, path: PathSegment[], replacement: string) {
+function setPath(value: unknown, path: PathSegment[], replacement: unknown) {
   let current: unknown = value;
   for (const segment of path.slice(0, -1)) {
     if (isRecord(current)) {
@@ -1038,17 +1099,73 @@ function setPath(value: unknown, path: PathSegment[], replacement: string) {
   }
 }
 
+/** Plone's 32-character UID as the dashed UUID Nick stores. */
+function dashedUuid(uid: string): string {
+  return /^[0-9a-f]{32}$/i.test(uid)
+    ? uid.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
+    : uid;
+}
+
+/**
+ * How references to beamed items are written. Plone takes absolute URLs and
+ * stores them as UID links itself. A server without `++api++`, such as Nick,
+ * stores what it gets: URLs become paths from the site root, which keep
+ * working under any host, and a relation becomes a list with one summary
+ * holding the item's UUID, which is how Nick stores relations.
+ */
+interface ReferenceStyle {
+  plain: boolean;
+  rootUrl: URL;
+  /** The UID each written item will have, by destination URL. */
+  uidByDestinationUrl: Map<string, string>;
+}
+
+function sitePathOf(url: string, rootUrl: URL): string {
+  const rootPath = canonicalizePathname(rootUrl.pathname);
+  const path = canonicalizePathname(new URL(url).pathname);
+  if (rootPath === '/') return path;
+  return path === rootPath ? '/' : path.slice(rootPath.length) || '/';
+}
+
 function rewriteImageReferences(
   payload: Record<string, unknown>,
   references: ImageReference[],
   destinationBySourceUrl: Map<string, string>,
+  style?: ReferenceStyle,
 ): Record<string, unknown> {
   const rewritten = cloneJson(payload);
   for (const reference of references) {
     const destinationUrl = destinationBySourceUrl.get(
       reference.sourceUrl.toString(),
     );
-    if (destinationUrl) setPath(rewritten, reference.path, destinationUrl);
+    if (!destinationUrl) continue;
+    if (!style?.plain) {
+      setPath(rewritten, reference.path, destinationUrl);
+      continue;
+    }
+    const path = sitePathOf(destinationUrl, style.rootUrl);
+    if (reference.kind !== 'relation') {
+      setPath(rewritten, reference.path, path);
+      continue;
+    }
+    // The relation field itself: the summary the `@id` is in.
+    const fieldPath = reference.path.slice(0, -1);
+    const uid = style.uidByDestinationUrl.get(destinationUrl);
+    let summary: unknown = rewritten;
+    for (const segment of fieldPath) {
+      summary = isRecord(summary) ? summary[String(segment)] : undefined;
+    }
+    const title =
+      isRecord(summary) && typeof summary.title === 'string'
+        ? summary.title
+        : undefined;
+    setPath(rewritten, fieldPath, [
+      {
+        '@id': path,
+        ...(uid ? { UID: dashedUuid(uid) } : {}),
+        ...(title === undefined ? {} : { title }),
+      },
+    ]);
   }
   return rewritten;
 }
@@ -1518,6 +1635,8 @@ export async function createTransferPlan(
     newUid: boolean;
     /** The type it is written as. */
     targetType: string;
+    /** The type a structural parent is created as, when not a Document. */
+    placeholderType?: string;
     missingType?: boolean;
     skipReason?: TransferOperation['skipReason'];
   };
@@ -1563,6 +1682,7 @@ export async function createTransferPlan(
     // Content of a type the destination lacks is beamed as the type chosen
     // for it, skipped, or flagged until someone chooses.
     let targetType = identity.type;
+    let placeholderType: string | undefined;
     let missingType = false;
     let skipReason: PlannedNode['skipReason'];
     if (skippedForType.has(parentKey)) {
@@ -1585,6 +1705,40 @@ export async function createTransferPlan(
         if (mapped === null) skipReason = 'type';
         else if (mapped) targetType = mapped;
         else missingType = true;
+      }
+    } else if (
+      destinationTypeIds !== undefined &&
+      !destinationTypeIds.has(PLACEHOLDER_TYPE)
+    ) {
+      // Structural parents are written as Documents. On a destination
+      // without them (Nick, say), use the source item's own type when the
+      // destination has it, then what was chosen for Documents, then Folder.
+      // A parent is never skipped: what it holds was asked for.
+      const mapped = Object.hasOwn(typeMap, PLACEHOLDER_TYPE)
+        ? typeMap[PLACEHOLDER_TYPE]
+        : undefined;
+      placeholderType = destinationTypeIds.has(identity.type)
+        ? identity.type
+        : typeof mapped === 'string'
+          ? mapped
+          : destinationTypeIds.has('Folder')
+            ? 'Folder'
+            : undefined;
+      if (!placeholderType) {
+        if (mapped === null) {
+          throw new TransferError(
+            'missing_types',
+            `${destinationUrl.origin} has no ${PLACEHOLDER_TYPE} or Folder type for the folder ${identity.id}, which holds content being beamed. Choose a type for ${PLACEHOLDER_TYPE} instead of skipping it.`,
+            409,
+          );
+        }
+        const issue = typeIssues.get(PLACEHOLDER_TYPE) ?? {
+          sourceType: PLACEHOLDER_TYPE,
+          count: 0,
+        };
+        issue.count += 1;
+        typeIssues.set(PLACEHOLDER_TYPE, issue);
+        missingType = true;
       }
     }
     if (skipReason) {
@@ -1711,12 +1865,24 @@ export async function createTransferPlan(
       renamedFrom,
       newUid,
       targetType,
+      ...(placeholderType ? { placeholderType } : {}),
       ...(missingType ? { missingType } : {}),
     });
   }
 
   // Second pass: build the payloads, now that every destination is final and
   // image references can be rewritten to renamed items too.
+  const referenceStyle: ReferenceStyle = {
+    plain: servesApiDirectly(destination.rootUrl),
+    rootUrl: destination.rootUrl,
+    uidByDestinationUrl: new Map(
+      planned.flatMap((item) =>
+        item.status === 'skip' || (item.newUid && item.status !== 'reuse')
+          ? []
+          : [[item.destinationItemUrl.toString(), item.identity.uid]],
+      ),
+    ),
+  };
   const operations: TransferOperation[] = [];
   for (const item of planned) {
     const { node, identity, status } = item;
@@ -1738,6 +1904,7 @@ export async function createTransferPlan(
           payload,
           collectImageReferences(node.content, node.sourceUrl),
           destinationBySourceUrl,
+          referenceStyle,
         );
       }
       if (status === 'rename') {
@@ -1745,7 +1912,11 @@ export async function createTransferPlan(
           item.destinationItemUrl.pathname.split('/').at(-1) as string,
         );
       }
-      if (item.targetType !== identity.type) payload['@type'] = item.targetType;
+      if (node.kind === 'placeholder') {
+        if (item.placeholderType) payload['@type'] = item.placeholderType;
+      } else if (item.targetType !== identity.type) {
+        payload['@type'] = item.targetType;
+      }
       if (input.convertToPlate && plateConverter && node.kind === 'content') {
         // After rewriting image references, so the converted blocks keep
         // the destination URLs.
@@ -1771,8 +1942,13 @@ export async function createTransferPlan(
       destinationUrl: item.destinationItemUrl.toString(),
       destinationParentUrl: item.destinationParentUrl.toString(),
       ...identity,
-      type: item.targetType,
-      ...(item.targetType === identity.type
+      // A parent is shown as the type it is created as. It is not mapped:
+      // nobody chose that type for it.
+      type:
+        node.kind === 'placeholder'
+          ? (item.placeholderType ?? PLACEHOLDER_TYPE)
+          : item.targetType,
+      ...(node.kind === 'placeholder' || item.targetType === identity.type
         ? {}
         : { sourceType: identity.type }),
       ...(item.missingType ? { missingType: true } : {}),
@@ -1981,12 +2157,41 @@ export async function executeTransferPlan(
 
   const destinationRoot = new URL(plan.destinationRootUrl);
 
+  /**
+   * The state of the item's destination parent, for an item that has no
+   * workflow on the source but one on the destination. On Plone, images
+   * and files have none and show as their folder does; on Nick every type
+   * has one and starts private.
+   */
+  const inheritedState = async (
+    operation: TransferOperation,
+  ): Promise<string | undefined> => {
+    const stateOf = async (url: string) => {
+      try {
+        const workflow = await requestJson(
+          apiUrlAtRoot(new URL(url), destinationRoot, '@workflow'),
+          destinationAuth,
+          fetchImpl,
+        );
+        const id = isRecord(workflow.state) ? workflow.state.id : undefined;
+        return typeof id === 'string' && id ? id : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const own = await stateOf(operation.destinationUrl);
+    if (!own) return undefined;
+    const parent = await stateOf(operation.destinationParentUrl);
+    return parent && parent !== own ? parent : undefined;
+  };
+
   const alignState = async (operation: TransferOperation) => {
     written.add(operation);
-    if (!operation.reviewState) return;
+    const target = operation.reviewState ?? (await inheritedState(operation));
+    if (!target) return;
     const warning = await alignReviewState(
       new URL(operation.destinationUrl),
-      operation.reviewState,
+      target,
       destinationRoot,
       destinationAuth,
       fetchImpl,

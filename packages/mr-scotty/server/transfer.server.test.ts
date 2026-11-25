@@ -1680,3 +1680,269 @@ describe('image resources', () => {
     });
   });
 });
+
+describe('servers without ++api++', () => {
+  // Nick serves the REST API on plain content URLs and has no ++api++.
+  function nickFetch() {
+    const backendFetch = successfulFetch();
+    return vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      if (url.origin !== 'https://nick.example') {
+        return backendFetch(resource, init);
+      }
+      if (url.pathname.includes('++api++')) {
+        return json({ error: { message: 'Not found' } }, 404);
+      }
+      const method = init?.method || 'GET';
+      if (method === 'POST') {
+        return json(
+          {
+            ...(JSON.parse(String(init?.body)) as Record<string, unknown>),
+            '@id': url.toString(),
+          },
+          201,
+        );
+      }
+      if (url.pathname === '/blog' && url.searchParams.has('expand')) {
+        return json({
+          '@id': 'https://nick.example/blog',
+          '@type': 'Folder',
+          UID: 'blog-uid',
+          id: 'blog',
+          title: 'Blog',
+          is_folderish: true,
+          '@components': {
+            navroot: { navroot: { '@id': 'https://nick.example' } },
+          },
+        });
+      }
+      if (url.pathname.endsWith('/@search')) {
+        return json({ items: [], items_total: 0 });
+      }
+      return json({ error: { message: 'Not found' } }, 404);
+    });
+  }
+
+  const nickInput = { ...input, destinationUrl: 'https://nick.example/blog' };
+
+  test('plans and beams to a destination that serves plain URLs', async () => {
+    const fetchImpl = nickFetch();
+    const plan = await createTransferPlan(nickInput, fetchImpl as typeof fetch);
+
+    expect(plan.destinationRootUrl).toBe('https://nick.example/');
+    expect(plan.destinationPath).toBe('/blog/news/launch');
+
+    fetchImpl.mockClear();
+    const report = await executeTransferPlan(
+      plan,
+      nickInput.destinationAuth,
+      fetchImpl as typeof fetch,
+    );
+    expect(report.failed).toBeFalsy();
+
+    const nickRequests = fetchImpl.mock.calls
+      .map(([resource]) => new URL(String(resource)))
+      .filter((url) => url.origin === 'https://nick.example');
+    expect(nickRequests.length).toBeGreaterThan(0);
+    expect(nickRequests.every((url) => !url.pathname.includes('++api++'))).toBe(
+      true,
+    );
+  });
+
+  test('reports the ++api++ 404 when the plain URL is not the API either', async () => {
+    const fetchImpl = vi.fn(async (resource: RequestInfo | URL) => {
+      const url = new URL(String(resource));
+      if (url.pathname.includes('++api++')) {
+        return json({ error: { message: 'Not found' } }, 404);
+      }
+      return new Response('<html></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    });
+
+    await expect(
+      createTransferPlan(
+        { ...input, sourceUrl: 'https://html.example/news/launch' },
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ code: 'restapi_404' });
+  });
+});
+
+describe('structural parents on a destination without Documents', () => {
+  function fetchWithTypes(types: string[]) {
+    const backendFetch = successfulFetch();
+    return vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      if (
+        url.origin === 'https://new.example' &&
+        canonicalRequestPath(url) === '/Plone/@types'
+      ) {
+        return json(
+          types.map((id) => ({
+            '@id': `https://new.example/Plone/@types/${id}`,
+            title: id,
+          })),
+        );
+      }
+      return backendFetch(resource, init);
+    });
+  }
+
+  test('creates a parent as its own type when the destination has it', async () => {
+    const plan = await createTransferPlan(
+      { ...input, typeMap: { Document: 'Page' } },
+      fetchWithTypes(['Folder', 'Page']) as typeof fetch,
+    );
+    const [parent, content] = plan.operations;
+    expect(parent).toMatchObject({ kind: 'placeholder', type: 'Folder' });
+    expect(parent.sourceType).toBeUndefined();
+    expect(parent.payload?.['@type']).toBe('Folder');
+    expect(content.payload?.['@type']).toBe('Page');
+    expect(plan.typeIssues).toEqual([
+      { sourceType: 'Document', count: 1, mappedTo: 'Page' },
+    ]);
+  });
+
+  test('flags the parent as a Document the destination lacks', async () => {
+    const plan = await createTransferPlan(
+      input,
+      fetchWithTypes(['Page']) as typeof fetch,
+    );
+    const [parent] = plan.operations;
+    expect(parent).toMatchObject({ kind: 'placeholder', missingType: true });
+    expect(plan.typeIssues).toEqual([{ sourceType: 'Document', count: 2 }]);
+
+    const mapped = await createTransferPlan(
+      { ...input, typeMap: { Document: 'Page' } },
+      fetchWithTypes(['Page']) as typeof fetch,
+    );
+    expect(mapped.operations.map((op) => op.payload?.['@type'])).toEqual([
+      'Page',
+      'Page',
+    ]);
+  });
+});
+
+describe('references and states on a server without ++api++', () => {
+  const hero = {
+    '@id': 'https://old.example/Plone/images/hero.png',
+    '@type': 'Image',
+    UID: '0123456789abcdef0123456789abcdef',
+    id: 'hero.png',
+    title: 'Hero',
+    is_folderish: false,
+    '@components': { navroot: { navroot: sourceRoot } },
+  };
+  const images = {
+    '@id': 'https://old.example/Plone/images',
+    '@type': 'Document',
+    UID: 'images-uid',
+    id: 'images',
+    title: 'Images',
+    is_folderish: true,
+    review_state: 'published',
+  };
+  const story = {
+    ...launch,
+    review_state: 'published',
+    preview_image_link: {
+      '@id': 'https://old.example/Plone/images/hero.png',
+      UID: hero.UID,
+      title: 'Hero',
+      image_scales: {},
+    },
+    blocks: {
+      img: {
+        '@type': 'image',
+        url: 'https://old.example/Plone/images/hero.png',
+      },
+    },
+    blocks_layout: { items: ['img'] },
+  };
+
+  function fetchImpl() {
+    // Destination states by path: new items start private.
+    const states = new Map<string, string>([['/blog', 'published']]);
+    return vi.fn(async (resource: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(resource));
+      const method = init?.method || 'GET';
+      if (url.origin === 'https://old.example') {
+        const path = canonicalRequestPath(url);
+        if (path === '/Plone/news/launch') return json(story);
+        if (path === '/Plone/news') return json(news);
+        if (path === '/Plone/images/hero.png') return json(hero);
+        if (path === '/Plone/images') return json(images);
+        return json({ error: { message: 'Not found' } }, 404);
+      }
+      if (url.pathname.includes('++api++')) {
+        return json({ error: { message: 'Not found' } }, 404);
+      }
+      const workflow = url.pathname.match(/^(.*)\/@workflow(?:\/(\w+))?$/);
+      if (workflow) {
+        const [, path, transition] = workflow;
+        if (transition) states.set(path, 'published');
+        return json({
+          state: { id: states.get(path) ?? 'private' },
+          transitions: [{ '@id': `${url.origin}${path}/@workflow/publish` }],
+        });
+      }
+      if (method === 'POST') {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json(
+          { ...body, '@id': `${url.toString()}/${String(body.id)}` },
+          201,
+        );
+      }
+      if (url.pathname === '/blog' && url.searchParams.has('expand')) {
+        return json({
+          '@id': 'https://nick.example/blog',
+          '@type': 'Folder',
+          UID: 'blog-uid',
+          id: 'blog',
+          title: 'Blog',
+          is_folderish: true,
+          '@components': {
+            navroot: { navroot: { '@id': 'https://nick.example' } },
+          },
+        });
+      }
+      if (url.pathname.endsWith('/@search')) {
+        return json({ items: [], items_total: 0 });
+      }
+      return json({ error: { message: 'Not found' } }, 404);
+    });
+  }
+
+  const nickInput = { ...input, destinationUrl: 'https://nick.example/blog' };
+
+  test('writes site paths and Nick relations for beamed images', async () => {
+    const plan = await createTransferPlan(
+      nickInput,
+      fetchImpl() as typeof fetch,
+    );
+    const content = plan.operations.find((op) => op.id === 'launch');
+    expect(plan.operations.map((op) => op.id)).toContain('hero.png');
+    expect(content?.payload?.preview_image_link).toEqual([
+      {
+        '@id': '/blog/images/hero.png',
+        UID: '01234567-89ab-cdef-0123-456789abcdef',
+        title: 'Hero',
+      },
+    ]);
+    expect(
+      (content?.payload?.blocks as Record<string, { url: string }>).img.url,
+    ).toBe('/blog/images/hero.png');
+  });
+
+  test('gives an item without a source workflow its parent state', async () => {
+    const fetch = fetchImpl();
+    const plan = await createTransferPlan(nickInput, fetch as typeof fetch);
+    await executeTransferPlan(plan, nickInput.destinationAuth, fetch);
+    const published = fetch.mock.calls
+      .filter(([, init]) => init?.method === 'POST')
+      .map(([resource]) => new URL(String(resource)).pathname)
+      .filter((path) => path.endsWith('/@workflow/publish'));
+    expect(published).toContain('/blog/images/hero.png/@workflow/publish');
+  });
+});
