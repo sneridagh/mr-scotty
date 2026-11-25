@@ -1,0 +1,1 @@
+Beamed images and files take the state of their folder when the destination gives them a workflow, preview images travel with their content, and on servers without `++api++` image references are written as site paths and relations as the server stores them. @sneridagh

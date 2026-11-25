@@ -737,9 +737,7 @@ function PlanTableView({ plan }: { plan: TransferPlan }) {
                             : undefined
                         }
                       >
-                        {operation.kind === 'placeholder'
-                          ? 'Document'
-                          : operation.type}
+                        {operation.type}
                       </span>
                       {operation.missingType && (
                         <RowTag>not on destination</RowTag>
@@ -1699,7 +1697,7 @@ export default function MrScotty() {
                       />
                       <TextField
                         label="Source content URL"
-                        description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ automatically."
+                        description="A complete plone.restapi content URL. Mr. Scotty adds ++api++ when the server needs it."
                         name="sourceUrl"
                         type="url"
                         placeholder="https://old.example/Plone/news/item"
@@ -1732,7 +1730,7 @@ export default function MrScotty() {
                       />
                       <TextField
                         label="Destination container URL"
-                        description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ automatically."
+                        description="The source-relative path is appended below this container. Mr. Scotty adds ++api++ when the server needs it."
                         name="destinationUrl"
                         type="url"
                         value={destinationUrlValue}
