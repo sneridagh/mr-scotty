@@ -1,0 +1,1 @@
+After each run, read every written item back from the destination and report in Activity what differs: items anonymous visitors can no longer see, changed UIDs, files of another size, URLs that still point at the source site, and fields that arrived empty. @sneridagh

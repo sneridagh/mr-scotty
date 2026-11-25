@@ -344,7 +344,7 @@ export function assertHostAllowed(
   }
 }
 
-type Fetch = typeof fetch;
+export type Fetch = typeof fetch;
 
 const API_TRAVERSAL_SEGMENT = '++api++';
 
@@ -375,7 +375,7 @@ const RESPONSE_ONLY_FIELDS = new Set([
 const DEFERRED_BINARY_FIELDS = new Set(['file', 'image', 'preview_image']);
 const PLACEHOLDER_TYPE = 'Document';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
@@ -539,7 +539,7 @@ function redirectsAwayFromApi(url: URL, location: string | null): boolean {
   );
 }
 
-async function requestJson(
+export async function requestJson(
   url: URL,
   auth: EndpointAuth,
   fetchImpl: Fetch,
@@ -691,7 +691,7 @@ function apiUrl(contentUrl: URL, ...segments: string[]): URL {
   return appendPath(result, ...segments);
 }
 
-function apiUrlAtRoot(
+export function apiUrlAtRoot(
   contentUrl: URL,
   rootUrl: URL,
   ...segments: string[]
@@ -1340,7 +1340,7 @@ async function readTypeFields(
   }
 }
 
-function hasValue(value: unknown): boolean {
+export function hasValue(value: unknown): boolean {
   if (value === null || value === undefined || value === '') return false;
   if (Array.isArray(value)) return value.length > 0;
   if (isRecord(value)) return Object.keys(value).length > 0;

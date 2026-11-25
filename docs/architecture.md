@@ -88,6 +88,19 @@ This boundary will allow the synchronous first slice to move behind a persistent
 - Cancel stops a job between operations: the item being written finishes, nothing after it is attempted, and the report says how far it got.
 - The events route, like the page, is for Managers only.
 
+## Verification
+
+After a run that wrote something and was not cancelled, the job reads every written item back from the destination (`server/verify.server.ts`) and records what it found in the Activity entry. Reused and skipped items are not checked. The checks look at what the destination stored, not at which server it is:
+
+- **Missing:** the item can't be read on the destination.
+- **Visibility:** an item anonymous visitors can read on the source must be readable anonymously on the destination too. This catches items that start private on a destination that gives their type a workflow.
+- **UID:** the item keeps the UID it was written with. Dashes are ignored, because Nick stores UUIDs with them.
+- **Files:** each image and file field is there and has the size of the source file.
+- **Source URLs:** no field or block still contains the source site's URL. Summaries of other items (`items`, `parent`, `breadcrumbs`) are skipped. The check is left out when source and destination are the same site.
+- **Fields:** a field that had a value arrived empty, such as a relation the destination couldn't resolve, or a field its type lacks. Fields the plan already listed as dropped for a mapped type, unset flags, and fields the server sets itself are left out.
+
+Missing items, visibility, UIDs and files are problems; source URLs and empty fields are warnings. The check makes up to three reads per item, four items at a time, and stops when the job is cancelled.
+
 ## Security
 
 The route is gated on the Manager role, not mere authentication: the loader and
