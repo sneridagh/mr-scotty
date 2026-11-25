@@ -23,6 +23,7 @@ The transfer runs on the Aurora server, with live progress, and can be cancelled
 - Content types the destination lacks are flagged before anything is written, and can be beamed as another type or skipped.
 - Page bodies can be converted to Aurora's document model (Plate) on the way.
 - Transfers run as background jobs with live progress in the Activity tab, and can be cancelled.
+- After a run, every written item is read back from the destination and checked: visible to the same people as on the source, the same UID, files of the same size, no URLs left that point at the source site, and no field that arrived empty.
 - Anonymous, bearer token, or username and password connections. Bearer tokens work for people who log in through Google, GitHub or another provider, and are renewed during long transfers.
 
 See the [architecture and current transfer contract](docs/architecture.md).

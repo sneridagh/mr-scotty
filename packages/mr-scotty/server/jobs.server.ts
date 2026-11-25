@@ -8,6 +8,7 @@ import {
   type TypeIssue,
   type TransferReport,
 } from './transfer.server';
+import { verifyTransfer, type Verification } from './verify.server';
 
 /**
  * Transfers run as background jobs on the Aurora server, so a long one keeps
@@ -35,6 +36,10 @@ export interface JobSnapshot {
   finishedAt?: string;
   progress: TransferProgress;
   report?: TransferReport;
+  /** Set while the written items are read back and checked. */
+  verifying?: boolean;
+  /** What reading the written items back found. */
+  verification?: Verification;
   error?: { code: string; message: string };
 }
 
@@ -109,7 +114,11 @@ export function startJob(
   destinationAuth: EndpointAuth,
   {
     execute = executeTransferPlan,
-  }: { execute?: typeof executeTransferPlan } = {},
+    verify = verifyTransfer,
+  }: {
+    execute?: typeof executeTransferPlan;
+    verify?: typeof verifyTransfer;
+  } = {},
 ): JobSnapshot {
   const job: Job = {
     controller: new AbortController(),
@@ -143,6 +152,30 @@ export function startJob(
       });
       job.snapshot.report = report;
       job.snapshot.destinationUrl = report.destinationUrl;
+      // Read back what was written, unless the person stopped the run.
+      const written =
+        report.created.length + report.replaced.length + report.updated.length;
+      if (!report.cancelled && written > 0) {
+        job.snapshot.verifying = true;
+        publish(job);
+        try {
+          job.snapshot.verification = await verify(
+            plan,
+            report,
+            destinationAuth,
+            fetch,
+            { signal: job.controller.signal },
+          );
+        } catch (error) {
+          job.snapshot.verification = {
+            checked: 0,
+            passed: 0,
+            items: [],
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        delete job.snapshot.verifying;
+      }
       job.snapshot.status = report.failed
         ? 'failed'
         : report.cancelled

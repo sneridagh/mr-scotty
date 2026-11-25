@@ -46,6 +46,7 @@ import {
   startJob,
   type JobSnapshot,
 } from '../server/jobs.server';
+import type { Verification } from '../server/verify.server';
 import {
   Form,
   data,
@@ -1072,6 +1073,78 @@ function WorkflowWarnings({
   );
 }
 
+/** How many items with findings the Activity entry lists. */
+const VERIFICATION_ITEMS_SHOWN = 10;
+
+/** What reading the written items back found. */
+function VerificationSummary({
+  verification,
+  destinationRootUrl,
+}: {
+  verification: Verification;
+  destinationRootUrl?: string;
+}) {
+  const { checked, passed, items, error } = verification;
+  const broken = items.filter((item) =>
+    item.problems.some((problem) => problem.severity === 'problem'),
+  ).length;
+  if (items.length === 0 && !error) {
+    return (
+      <p className="mt-2 flex items-center gap-1.5 text-xs text-quanta-turtle">
+        <Icon name="check" className="h-3.5 w-3.5" />
+        Checked {plural(checked, 'item')} on the destination: all arrived as
+        they left.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-3">
+      <Callout tone={broken > 0 ? 'warning' : 'neutral'}>
+        <span className="font-semibold">
+          {items.length > 0
+            ? `Checked ${plural(checked, 'item')} on the destination: ${passed} arrived as they left, ${items.length} need a look.`
+            : `Checked ${plural(checked, 'item')} on the destination.`}
+        </span>
+        {error && <p className="mt-1 text-xs">The check stopped: {error}</p>}
+        {items.length > 0 && (
+          <ul
+            aria-label="Verification findings"
+            className="mt-1 flex flex-col gap-1.5 text-xs [overflow-wrap:anywhere]"
+          >
+            {items.slice(0, VERIFICATION_ITEMS_SHOWN).map((item) => (
+              <li key={item.destinationUrl}>
+                <span className="font-mono break-all">
+                  {sitePath(item.destinationUrl, destinationRootUrl)}
+                </span>
+                <ul className="ml-3 list-disc pl-3">
+                  {item.problems.map((problem) => (
+                    <li
+                      key={problem.code}
+                      className={
+                        problem.severity === 'problem'
+                          ? 'font-medium'
+                          : undefined
+                      }
+                    >
+                      {problem.message}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+            {items.length > VERIFICATION_ITEMS_SHOWN && (
+              <li>
+                And {plural(items.length - VERIFICATION_ITEMS_SHOWN, 'item')}{' '}
+                more.
+              </li>
+            )}
+          </ul>
+        )}
+      </Callout>
+    </div>
+  );
+}
+
 function ActivityEmpty({ hint }: { hint: string }) {
   return (
     <div className="rounded-xl border border-dashed border-quanta-smoke bg-quanta-air p-8 text-center">
@@ -1286,17 +1359,23 @@ function JobItem({
               />
               <CancelButton jobId={job.id} />
             </div>
-            {progress.current && (
-              <p className="mt-2 truncate text-xs text-quanta-pigeon">
-                {progress.current.status}{' '}
-                <PathText
-                  path={sitePath(
-                    progress.current.destinationUrl,
-                    job.destinationRootUrl,
-                  )}
-                  title={progress.current.destinationUrl}
-                />
+            {job.verifying ? (
+              <p className="mt-2 text-xs text-quanta-pigeon">
+                Checking what arrived on the destination…
               </p>
+            ) : (
+              progress.current && (
+                <p className="mt-2 truncate text-xs text-quanta-pigeon">
+                  {progress.current.status}{' '}
+                  <PathText
+                    path={sitePath(
+                      progress.current.destinationUrl,
+                      job.destinationRootUrl,
+                    )}
+                    title={progress.current.destinationUrl}
+                  />
+                </p>
+              )
             )}
           </>
         ) : (
@@ -1340,6 +1419,12 @@ function JobItem({
               <div className="mt-3">
                 <WorkflowWarnings warnings={report.warnings} />
               </div>
+            )}
+            {job.verification && (
+              <VerificationSummary
+                verification={job.verification}
+                destinationRootUrl={job.destinationRootUrl}
+              />
             )}
           </>
         )}

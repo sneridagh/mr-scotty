@@ -54,6 +54,55 @@ describe('jobs', () => {
     expect(done.finishedAt).toBeDefined();
   });
 
+  test('reads back what was written, and keeps what it found', async () => {
+    const written = {
+      ...report,
+      created: [
+        {
+          sourceUrl: 'https://old.example/Plone/news',
+          destinationUrl: 'https://new.example/Plone/news',
+          uid: 'news-uid',
+          kind: 'content' as const,
+        },
+      ],
+    };
+    const updates: JobSnapshot[] = [];
+    const unsubscribe = subscribe((job) => updates.push(job));
+    const verification = { checked: 1, passed: 1, items: [] };
+    const verify = vi.fn(async () => verification);
+    startJob(
+      plan,
+      { type: 'anonymous' },
+      { execute: vi.fn(async () => written), verify },
+    );
+    await settled();
+    unsubscribe();
+
+    expect(verify).toHaveBeenCalledWith(
+      plan,
+      written,
+      { type: 'anonymous' },
+      fetch,
+      expect.anything(),
+    );
+    expect(updates.some((job) => job.verifying)).toBe(true);
+    const [done] = listJobs();
+    expect(done.status).toBe('done');
+    expect(done.verifying).toBeUndefined();
+    expect(done.verification).toEqual(verification);
+  });
+
+  test('does not check a run that wrote nothing', async () => {
+    const verify = vi.fn();
+    startJob(
+      plan,
+      { type: 'anonymous' },
+      { execute: vi.fn(async () => report), verify },
+    );
+    await settled();
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   test('publishes progress to subscribers', async () => {
     const updates: JobSnapshot[] = [];
     const unsubscribe = subscribe((job) => updates.push(job));
